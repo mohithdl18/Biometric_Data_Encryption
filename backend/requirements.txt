@@ -1,0 +1,45 @@
+# Face and Fingerprint Registration System Requirements
+# Core web framework and API
+Flask==3.1.2
+flask-cors==6.0.1
+
+# Computer Vision and Image Processing
+opencv-python==4.12.0.88
+numpy==2.2.6
+Pillow==11.3.0
+
+# Fingerprint Sensor Communication
+pyserial==3.5
+
+# File Upload Support
+python-multipart==0.0.20
+
+# Data Processing and Analysis
+pandas==2.3.2
+scikit-learn==1.7.1
+
+# HTTP Requests
+requests==2.32.4
+
+# Utilities
+Werkzeug==3.1.3
+blinker==1.9.0
+click==8.2.1
+itsdangerous==2.2.0
+Jinja2==3.1.6
+MarkupSafe==3.0.2
+colorama==0.4.6
+
+# Image Processing
+imageio==2.37.0
+matplotlib==3.10.5
+
+# Threading and Async Support
+threading
+
+# File System Operations
+os
+sys
+time
+datetime
+struct
