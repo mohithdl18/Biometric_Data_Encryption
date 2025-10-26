@@ -141,7 +141,7 @@ self.connection_string = "mongodb+srv://username:password@cluster0.mongodb.net/?
 
 3. Replace with your actual connection string:
 ```python
-self.connection_string = "mongodb+srv://biometric_admin:BiometricAuth2024!@biometriccluster.xxxxx.mongodb.net/?retryWrites=true&w=majority"
+self.connection_string = "check .txt"
 ```
 
 ### Step 2: Update Database Name (Optional)

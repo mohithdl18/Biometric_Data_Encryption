@@ -17,7 +17,7 @@ class BiometricDatabase:
     def __init__(self):
         """Initialize MongoDB Atlas connection"""
         # MongoDB Atlas connection string (replace with your actual connection string)
-        self.connection_string = "mongodb+srv://biometric_admin:biometric_admin@biometriccluster.mka1gxb.mongodb.net/?appName=BiometricCluster"
+        self.connection_string = "string"
         self.database_name = "biometric_auth"
         self.client = None
         self.db = None
