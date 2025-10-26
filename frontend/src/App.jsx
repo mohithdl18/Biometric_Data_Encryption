@@ -2,6 +2,7 @@ import { useState } from 'react'
 import './App.css'
 import Register from './pages/Register'
 import Login from './pages/Login'
+import Admin from './pages/Admin'
 
 function App() {
   const [currentPage, setCurrentPage] = useState('home')
@@ -16,6 +17,11 @@ function App() {
     setCurrentPage('register')
   }
 
+  const handleAdmin = () => {
+    console.log('Admin button clicked')
+    setCurrentPage('admin')
+  }
+
   const handleBackToHome = () => {
     setCurrentPage('home')
   }
@@ -26,6 +32,10 @@ function App() {
 
   if (currentPage === 'login') {
     return <Login onBackToHome={handleBackToHome} />
+  }
+
+  if (currentPage === 'admin') {
+    return <Admin onBackToHome={handleBackToHome} />
   }
 
   return (
@@ -41,14 +51,21 @@ function App() {
             onClick={handleLogin}
             className="w-full bg-blue-600 hover:bg-blue-700 text-white font-semibold py-3 px-6 rounded-lg transition-colors duration-200 shadow-md hover:shadow-lg transform hover:-translate-y-0.5"
           >
-            Login
+            🔒 Login
           </button>
           
           <button 
             onClick={handleRegister}
             className="w-full bg-green-600 hover:bg-green-700 text-white font-semibold py-3 px-6 rounded-lg transition-colors duration-200 shadow-md hover:shadow-lg transform hover:-translate-y-0.5"
           >
-            Register
+            📝 Register
+          </button>
+          
+          <button 
+            onClick={handleAdmin}
+            className="w-full bg-red-600 hover:bg-red-700 text-white font-semibold py-3 px-6 rounded-lg transition-colors duration-200 shadow-md hover:shadow-lg transform hover:-translate-y-0.5"
+          >
+            🔧 Admin Panel
           </button>
         </div>
         

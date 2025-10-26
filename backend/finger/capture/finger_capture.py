@@ -181,7 +181,7 @@ class R307FingerCapture:
         print(f"✅ Template uploaded successfully ({len(template_data)} bytes)")
         return template_data
     
-    def capture_fingerprint_template(self, user_name, save_path="../../../dataset/face"):
+    def capture_fingerprint_template(self, user_name, save_path="../../../dataset"):
         """Capture fingerprint template and save as .bin file"""
         if not self.connect_sensor():
             return False
@@ -236,6 +236,46 @@ class R307FingerCapture:
         except Exception as e:
             print(f"❌ Error during fingerprint capture: {e}")
             return False
+        finally:
+            if self.serial_conn:
+                self.disconnect()
+    
+    def capture_fingerprint_template_data(self, user_name):
+        """Capture fingerprint template and return binary data for MongoDB storage"""
+        if not self.connect_sensor():
+            return None
+            
+        try:
+            print(f"\n=== Fingerprint Capture for {user_name} ===")
+            
+            # Step 1: Capture image
+            max_attempts = 10
+            for attempt in range(max_attempts):
+                print(f"Attempt {attempt + 1}/{max_attempts}")
+                if self.get_image():
+                    break
+                time.sleep(0.5)
+            else:
+                print("❌ Failed to capture fingerprint image after multiple attempts")
+                return None
+            
+            # Step 2: Convert to template
+            if not self.image_2_template(buffer_id=1):
+                print("❌ Failed to generate template from image")
+                return None
+            
+            # Step 3: Upload template
+            template_data = self.upload_template(buffer_id=1)
+            if not template_data:
+                print("❌ Failed to upload template")
+                return None
+            
+            print(f"✅ Fingerprint template captured ({len(template_data)} bytes)")
+            return template_data
+                
+        except Exception as e:
+            print(f"❌ Error during fingerprint capture: {e}")
+            return None
         finally:
             if self.serial_conn:
                 self.disconnect()

@@ -7,13 +7,24 @@ import threading
 import time
 import os
 import sys
+import io
+from PIL import Image
 
 # Add the face capture module to path
 sys.path.append(os.path.join(os.path.dirname(__file__), 'face', 'capture'))
 from face_capture import FaceCapture
 
+# Import MongoDB client
+from mongodb_client import get_database
+
+# Import admin blueprint
+from admin import admin_bp
+
 app = Flask(__name__)
 CORS(app)  # Enable CORS for React frontend
+
+# Register admin blueprint
+app.register_blueprint(admin_bp)
 
 # Global variables to track capture status
 capture_status = {}
@@ -43,16 +54,23 @@ def register_user():
         if not user_name:
             return jsonify({"error": "Valid name is required"}), 400
         
+        # Get database connection
+        db = get_database()
+        
         # Check if user already exists
-        user_folder = os.path.join("../dataset/face", user_name)
-        if os.path.exists(user_folder):
+        if db.user_exists(user_name):
             return jsonify({"error": f"User '{user_name}' already exists"}), 409
+        
+        # Create user in MongoDB
+        user_id = db.create_user(user_name, email, phone)
+        if not user_id:
+            return jsonify({"error": "Failed to create user"}), 500
         
         # Initialize capture status
         capture_status[user_name] = {
             "status": "ready",
             "photos_captured": 0,
-            "total_photos": 5,
+            "total_photos": 1,
             "message": "Registration session started. Ready for manual capture.",
             "completed": False,
             "error": None
@@ -61,6 +79,7 @@ def register_user():
         return jsonify({
             "message": f"Registration session started for {user_name}",
             "user_name": user_name,
+            "user_id": user_id,
             "status": "ready"
         })
         
@@ -99,38 +118,31 @@ def capture_photo():
         if user_name not in capture_status:
             return jsonify({"error": "User session not found. Please start registration first."}), 404
         
-        # Create user directory if it doesn't exist
-        user_folder = os.path.join("../dataset/face", user_name)
-        if not os.path.exists(user_folder):
-            os.makedirs(user_folder)
+        # Get database connection
+        db = get_database()
         
-        # Get current photo count
+        # Check if photo already captured
         current_count = capture_status[user_name]["photos_captured"]
+        if current_count >= 1:
+            return jsonify({"error": "Photo already captured"}), 400
         
-        if current_count >= 5:
-            return jsonify({"error": "Maximum photos already captured"}), 400
+        # Read photo data
+        photo_data = photo.read()
         
-        # Save the photo
-        filename = f"face_{current_count + 1:03d}.jpg"
-        filepath = os.path.join(user_folder, filename)
-        photo.save(filepath)
+        # Save face image to MongoDB
+        success = db.save_face_image(user_name, photo_data, "face_001.jpg")
+        
+        if not success:
+            return jsonify({"error": "Failed to save photo to database"}), 500
         
         # Update status
-        capture_status[user_name]["photos_captured"] = current_count + 1
-        capture_status[user_name]["message"] = f"Photo {current_count + 1}/5 captured successfully"
+        capture_status[user_name]["photos_captured"] = 1
+        capture_status[user_name]["message"] = "Photo 1/1 captured successfully"
+        capture_status[user_name]["status"] = "completed"
+        capture_status[user_name]["completed"] = True
         
-        # Check if registration is complete
-        if capture_status[user_name]["photos_captured"] >= 5:
-            capture_status[user_name]["status"] = "completed"
-            capture_status[user_name]["completed"] = True
-            capture_status[user_name]["message"] = "Registration completed successfully!"
-            
-            # Save user info
-            user_info_path = os.path.join(user_folder, "user_info.txt")
-            with open(user_info_path, 'w') as f:
-                f.write(f"Name: {user_name}\n")
-                f.write(f"Registration Date: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
-                f.write(f"Photos: 5 captured\n")
+        # Update registration status
+        db.update_registration_status(user_name, face_complete=True)
         
         return jsonify({
             "success": True,
@@ -166,8 +178,15 @@ def capture_fingerprint():
         # Initialize fingerprint capture
         finger_capture = R307FingerCapture(port='COM3')
         
-        # Capture fingerprint template
-        success = finger_capture.capture_fingerprint_template(user_name, "../dataset/face")
+        # Capture fingerprint template and save to MongoDB
+        template_data = finger_capture.capture_fingerprint_template_data(user_name)
+        
+        if template_data:
+            # Get database connection and save template
+            db = get_database()
+            success = db.save_fingerprint_template(user_name, template_data)
+        else:
+            success = False
         
         if success:
             # Update user session status
@@ -310,7 +329,7 @@ def capture_with_status_updates(user_name):
 
 def save_user_info(user_name, email, phone):
     """Save user information to a file"""
-    user_info_path = f"../dataset/face/{user_name}/user_info.txt"
+    user_info_path = f"../dataset/{user_name}/user_info.txt"
     with open(user_info_path, 'w') as f:
         f.write(f"Name: {user_name}\n")
         f.write(f"Email: {email}\n")
@@ -321,16 +340,15 @@ def save_user_info(user_name, email, phone):
 def get_registered_users():
     """Get list of registered users with fingerprint data"""
     try:
-        # Add the fingerprint match module to path
-        sys.path.append(os.path.join(os.path.dirname(__file__), 'finger', 'match'))
-        from finger_match import get_registered_users
+        # Get database connection
+        db = get_database()
         
-        users = get_registered_users("../dataset/face")
+        users = db.get_registered_users()
         
         return jsonify({
             "users": users,
             "count": len(users),
-            "message": f"Found {len(users)} registered users with fingerprint data"
+            "message": f"Found {len(users)} registered users with complete biometric data"
         })
         
     except Exception as e:
@@ -350,6 +368,17 @@ def authenticate_user():
         if not username:
             return jsonify({"error": "Valid username is required"}), 400
         
+        # Get database connection
+        db = get_database()
+        
+        # Get stored fingerprint template
+        stored_template = db.get_fingerprint_template(username)
+        if not stored_template:
+            return jsonify({
+                "success": False,
+                "message": "No fingerprint template found for user"
+            }), 404
+        
         # Add the fingerprint match module to path
         sys.path.append(os.path.join(os.path.dirname(__file__), 'finger', 'match'))
         from finger_match import R307FingerMatcher
@@ -357,8 +386,8 @@ def authenticate_user():
         # Create matcher instance
         matcher = R307FingerMatcher()
         
-        # Perform authentication
-        success, confidence, message = matcher.authenticate_user(username, "../dataset/face")
+        # Perform authentication with stored template
+        success, confidence, message = matcher.authenticate_user_with_template(username, stored_template)
         
         if success:
             return jsonify({

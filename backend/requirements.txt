@@ -11,6 +11,10 @@ Pillow==11.3.0
 # Fingerprint Sensor Communication
 pyserial==3.5
 
+# MongoDB Atlas Integration
+pymongo==4.6.0
+dnspython==2.4.2
+
 # File Upload Support
 python-multipart==0.0.20
 

@@ -11,7 +11,7 @@ function Register() {
   const [captureStatus, setCaptureStatus] = useState({
     message: '',
     photos_captured: 0,
-    total_photos: 5
+    total_photos: 1
   })
   const [stream, setStream] = useState(null)
   const [isCapturing, setIsCapturing] = useState(false)
@@ -123,7 +123,7 @@ function Register() {
         }))
         
         // Check if we're done with face capture
-        if (captureStatus.photos_captured + 1 >= 5) {
+        if (captureStatus.photos_captured + 1 >= 1) {
           stopCamera()
           setIsRegistering(false)
           // Move to fingerprint capture step
@@ -175,9 +175,9 @@ function Register() {
         
         // Complete registration
         setTimeout(() => {
-          alert(`🎉 Registration completed successfully!\n\n✅ Face: 5/5 photos captured\n✅ Fingerprint: Captured\n📁 Data saved in: dataset/face/${formData.name}/`)
+          alert(`🎉 Registration completed successfully!\n\n✅ Face: 1/1 photo captured\n✅ Fingerprint: Captured\n📁 Data saved in: dataset/${formData.name}/`)
           setStep(1) // Go back to start
-          setCaptureStatus({ message: '', photos_captured: 0, total_photos: 5 })
+          setCaptureStatus({ message: '', photos_captured: 0, total_photos: 1 })
           setFingerprintStatus({ message: '', isCapturing: false, completed: false })
         }, 2000)
       } else {
@@ -216,13 +216,13 @@ function Register() {
         setCaptureStatus({
           message: status.message || '',
           photos_captured: status.photos_captured || 0,
-          total_photos: status.total_photos || 5
+          total_photos: status.total_photos || 1
         })
         
         if (status.completed) {
           // Registration completed successfully
           setIsRegistering(false)
-          alert(`🎉 Registration completed successfully!\n\n✅ ${status.photos_captured}/5 photos captured\n📁 Photos saved in: dataset/face/${userName}/\n\nYou can now use the login system!`)
+          alert(`🎉 Registration completed successfully!\n\n✅ ${status.photos_captured}/1 photo captured\n📁 Photo saved in: dataset/${userName}/\n\nYou can now use the login system!`)
         } else if (status.status === 'error' || status.status === 'failed') {
           // Registration failed
           setIsRegistering(false)
@@ -338,9 +338,9 @@ function Register() {
               <div className="text-sm text-left space-y-1">
                 <p>• Camera will open automatically</p>
                 <p>• Position your face in the frame</p>
-                <p>• 5 photos will be captured automatically</p>
+                <p>• 1 photo will be captured manually</p>
                 <p>• Keep your face steady during capture</p>
-                <p>• Photos saved as face_001 to face_005</p>
+                <p>• Photo saved as face_001.jpg</p>
               </div>
             </div>
           </div>
@@ -418,7 +418,7 @@ function Register() {
             
             {/* Face detection overlay would go here */}
             <div className="absolute top-4 left-4 bg-black bg-opacity-50 text-white px-3 py-1 rounded-full text-sm">
-              📸 {captureStatus.photos_captured}/5 photos captured
+              📸 {captureStatus.photos_captured}/1 photo captured
             </div>
           </div>
 
@@ -451,7 +451,7 @@ function Register() {
                 onClick={() => {
                   stopCamera()
                   setStep(1)
-                  setCaptureStatus({ message: '', photos_captured: 0, total_photos: 5 })
+                  setCaptureStatus({ message: '', photos_captured: 0, total_photos: 1 })
                 }}
                 className="flex-1 bg-red-500 hover:bg-red-600 text-white font-semibold py-3 px-6 rounded-lg transition-colors duration-200"
               >
@@ -525,9 +525,9 @@ function Register() {
               <button
                 onClick={() => {
                   // Skip fingerprint and complete registration
-                  alert(`⚠️ Registration completed without fingerprint!\n\n✅ Face: 5/5 photos captured\n❌ Fingerprint: Skipped\n📁 Data saved in: dataset/face/${formData.name}/`)
+                  alert(`⚠️ Registration completed without fingerprint!\n\n✅ Face: 1/1 photo captured\n❌ Fingerprint: Skipped\n📁 Data saved in: dataset/${formData.name}/`)
                   setStep(1)
-                  setCaptureStatus({ message: '', photos_captured: 0, total_photos: 5 })
+                  setCaptureStatus({ message: '', photos_captured: 0, total_photos: 1 })
                   setFingerprintStatus({ message: '', isCapturing: false, completed: false })
                 }}
                 disabled={fingerprintStatus.isCapturing}
@@ -539,7 +539,7 @@ function Register() {
               <button
                 onClick={() => {
                   setStep(1)
-                  setCaptureStatus({ message: '', photos_captured: 0, total_photos: 5 })
+                  setCaptureStatus({ message: '', photos_captured: 0, total_photos: 1 })
                   setFingerprintStatus({ message: '', isCapturing: false, completed: false })
                 }}
                 disabled={fingerprintStatus.isCapturing}

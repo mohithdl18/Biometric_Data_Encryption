@@ -219,29 +219,13 @@ class R307FingerMatcher:
                 return False, 0
         return False, 0
     
-    def authenticate_user(self, username, dataset_path="../../../dataset/face"):
-        """Authenticate user by matching live fingerprint with stored template"""
-        # Construct path to user's fingerprint file
-        user_folder = os.path.join(dataset_path, username)
-        fingerprint_file = os.path.join(user_folder, "fingerprint.bin")
-        
-        # Check if user folder and fingerprint file exist
-        if not os.path.exists(user_folder):
-            return False, 0, f"User folder not found: {username}"
-        
-        if not os.path.exists(fingerprint_file):
-            return False, 0, f"Fingerprint file not found for user: {username}"
-        
+    def authenticate_user_with_template(self, username, template_data):
+        """Authenticate user by matching live fingerprint with provided template data"""
         # Connect to sensor
         if not self.connect():
             return False, 0, "Failed to connect to fingerprint sensor"
         
         try:
-            # Load stored template file
-            template_data = self.load_template_file(fingerprint_file)
-            if not template_data:
-                return False, 0, "Failed to load fingerprint template"
-            
             # Download stored template to buffer 1
             if not self.download_template(template_data, buffer_id=1):
                 return False, 0, "Failed to download template to sensor"
@@ -281,7 +265,7 @@ class R307FingerMatcher:
         finally:
             self.disconnect()
 
-def get_registered_users(dataset_path="../../../dataset/face"):
+def get_registered_users(dataset_path="../../../dataset"):
     """Get list of registered users from dataset folder"""
     try:
         if not os.path.exists(dataset_path):
