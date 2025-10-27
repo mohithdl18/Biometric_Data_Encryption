@@ -14,6 +14,10 @@ from PIL import Image
 sys.path.append(os.path.join(os.path.dirname(__file__), 'face', 'capture'))
 from face_capture import FaceCapture
 
+# Add the face matching module to path
+sys.path.append(os.path.join(os.path.dirname(__file__), 'face', 'match'))
+from face_match import DatabaseFaceMatcher
+
 # Import MongoDB client
 from mongodb_client import get_database
 
@@ -353,6 +357,37 @@ def get_registered_users():
         
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+@app.route('/api/face-match', methods=['POST'])
+def match_face():
+    """Automatically match face from webcam against database"""
+    try:
+        # Initialize face matcher
+        face_matcher = DatabaseFaceMatcher()
+        
+        # Perform face matching from webcam
+        result = face_matcher.match_face_from_webcam(duration_seconds=10)
+        
+        if result['success']:
+            return jsonify({
+                "success": True,
+                "matched_user": result['matched_user'],
+                "confidence": result['confidence'],
+                "message": result['message']
+            })
+        else:
+            return jsonify({
+                "success": False,
+                "error": result['error'],
+                "best_confidence": result.get('best_confidence', 0.0)
+            }), 400
+        
+    except Exception as e:
+        print(f"[ERROR] Face matching API error: {e}")
+        return jsonify({
+            "success": False,
+            "error": f"Face matching failed: {str(e)}"
+        }), 500
 
 @app.route('/api/authenticate', methods=['POST'])
 def authenticate_user():
