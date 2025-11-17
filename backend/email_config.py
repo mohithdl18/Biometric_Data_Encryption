@@ -2,8 +2,8 @@
 # Update these settings before deploying to production
 
 # Mailjet API Configuration
-MAILJET_API_KEY = "9ad1db68f970f126768021810ba00691"
-MAILJET_SECRET_KEY = "e33f8069eb40a3ffc0b1a0824b2b37c4"  # Mailjet Secret Key
+MAILJET_API_KEY = ""
+MAILJET_SECRET_KEY = ""  # Mailjet Secret Key
 # To get your secret key:
 # 1. Go to https://app.mailjet.com/account/apikeys
 # 2. Copy your Secret Key

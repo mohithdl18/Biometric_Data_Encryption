@@ -219,6 +219,103 @@ class R307FingerMatcher:
                 return False, 0
         return False, 0
     
+    def capture_and_get_template(self):
+        """Capture fingerprint and return template data for SHA-256 key generation"""
+        # Connect to sensor
+        if not self.connect():
+            return False, None, "Failed to connect to fingerprint sensor"
+        
+        try:
+            print("👆 Place your finger on the sensor for template capture...")
+            
+            # Try to capture fingerprint (with retries)
+            max_attempts = 5
+            for attempt in range(max_attempts):
+                print(f"Template capture attempt {attempt + 1}/{max_attempts}")
+                
+                # Capture fingerprint image
+                if not self.get_image():
+                    print("❌ No finger detected, please place finger on sensor")
+                    time.sleep(1)
+                    continue
+                
+                # Convert image to template in buffer 1
+                if not self.image_2_template(buffer_id=1):
+                    print("❌ Failed to generate template from fingerprint")
+                    time.sleep(1)
+                    continue
+                
+                # Upload template from buffer 1 to get template data
+                print("📤 Reading template data from sensor...")
+                
+                # Send upload command to get template data from buffer 1
+                cmd = struct.pack('>BH', self.CMD_UP_CHAR, 1)  # Buffer 1
+                self._write_packet(self.FINGERPRINT_COMMANDPACKET, cmd)
+                
+                # Read acknowledgment packet first
+                ack_packet = self._read_packet()
+                if ack_packet and len(ack_packet) > 0 and ack_packet[0] == self.FINGERPRINT_OK:
+                    print("✅ Sensor ready to send template data")
+                    
+                    # Now read the actual template data packets
+                    template_data = b''
+                    packet_count = 0
+                    expected_size = 512  # Standard R307 template size
+                    
+                    while packet_count < 20 and len(template_data) < expected_size:  # Safety limit
+                        try:
+                            # Read data packet
+                            data_packet = self._read_packet()
+                            if data_packet is None:
+                                print(f"No more data packets received after {packet_count} packets")
+                                break
+                                
+                            # Add the packet data
+                            if isinstance(data_packet, bytes) and len(data_packet) > 0:
+                                template_data += data_packet
+                                packet_count += 1
+                                print(f"Packet {packet_count}: {len(data_packet)} bytes (total: {len(template_data)})")
+                                
+                                # Check if we have complete template
+                                if len(template_data) >= expected_size:
+                                    print("Template data complete")
+                                    break
+                            else:
+                                print(f"Invalid packet data: {type(data_packet)}")
+                                break
+                                
+                        except Exception as e:
+                            print(f"Error reading packet {packet_count}: {e}")
+                            break
+                    
+                    # Validate and normalize template data
+                    if len(template_data) >= 200:  # Minimum reasonable template size
+                        # Ensure consistent size for SHA-256 key generation
+                        if len(template_data) > expected_size:
+                            template_data = template_data[:expected_size]
+                        elif len(template_data) < expected_size:
+                            # Pad with zeros to ensure consistent size
+                            template_data += b'\x00' * (expected_size - len(template_data))
+                            
+                        print(f"✅ Template captured successfully ({len(template_data)} bytes)")
+                        print(f"Template preview: {template_data[:20].hex()}...")
+                        return True, template_data, "Template captured successfully"
+                    else:
+                        print(f"❌ Template data too small: {len(template_data)} bytes")
+                        continue
+                else:
+                    error_code = ack_packet[0] if ack_packet and len(ack_packet) > 0 else "unknown"
+                    print(f"❌ Template upload failed with error code: {error_code}")
+                    continue
+            
+            return False, None, f"Failed to capture template after {max_attempts} attempts"
+            
+        except Exception as e:
+            print(f"❌ Template capture error: {e}")
+            return False, None, f"Template capture error: {str(e)}"
+        finally:
+            self.disconnect()
+    
     def authenticate_user_with_template(self, username, template_data):
         """Authenticate user by matching live fingerprint with provided template data"""
         # Connect to sensor

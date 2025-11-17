@@ -10,6 +10,7 @@ function Login({ onBackToHome, onLoginSuccess }) {
   const [message, setMessage] = useState('')
   const [messageType, setMessageType] = useState('info') // 'info', 'success', 'error'
   const [showConfirmation, setShowConfirmation] = useState(false)
+  const [showManualSelection, setShowManualSelection] = useState(false)
   const [faceMatchResult, setFaceMatchResult] = useState(null)
 
   // Fetch registered users on component mount
@@ -20,7 +21,7 @@ function Login({ onBackToHome, onLoginSuccess }) {
   const fetchUsers = async () => {
     try {
       setIsLoading(true)
-      const response = await fetch('http://localhost:5000/api/users')
+      const response = await fetch('http://localhost:5000/api/users-for-selection')
       const data = await response.json()
       
       if (response.ok) {
@@ -44,6 +45,7 @@ function Login({ onBackToHome, onLoginSuccess }) {
       setIsFaceMatching(true)
       setMessage('🎥 Starting face recognition... Please look at your webcam.')
       setMessageType('info')
+      setShowManualSelection(false)
 
       const response = await fetch('http://localhost:5000/api/face-match', {
         method: 'POST',
@@ -58,11 +60,16 @@ function Login({ onBackToHome, onLoginSuccess }) {
         setFaceMatchResult(data)
         setMatchedUser(data.matched_user)
         setShowConfirmation(true)
-        setMessage(`Face recognized as ${data.matched_user} (confidence: ${data.confidence.toFixed(2)})`)
+        setMessage(`Face recognized as ${data.matched_user} (confidence: ${(data.confidence * 100).toFixed(1)}%)`)
         setMessageType('success')
       } else {
-        setMessage(data.error || 'Face recognition failed. Please try again.')
+        setMessage(data.message || data.error || 'Face recognition failed.')
         setMessageType('error')
+        
+        // Check if manual selection should be shown
+        if (data.show_manual_selection) {
+          setShowManualSelection(true)
+        }
       }
     } catch (error) {
       setMessage('Error connecting to server or webcam. Please check connections.')
@@ -72,19 +79,82 @@ function Login({ onBackToHome, onLoginSuccess }) {
     }
   }
 
-  const handleConfirmUser = (confirmed) => {
+  const handleConfirmUser = async (confirmed) => {
     if (confirmed) {
-      setSelectedUser(matchedUser)
-      setShowConfirmation(false)
-      setMessage(`Confirmed as ${matchedUser}. Now please proceed with fingerprint authentication.`)
-      setMessageType('info')
+      // User confirmed their identity
+      try {
+        const response = await fetch('http://localhost:5000/api/verify-user-identity', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            username: matchedUser,
+            is_correct: true,
+            confidence: faceMatchResult?.confidence || 0
+          })
+        })
+
+        const data = await response.json()
+
+        if (response.ok && data.success) {
+          setSelectedUser(matchedUser)
+          setShowConfirmation(false)
+          setMessage(`Confirmed as ${matchedUser}. Now please proceed with fingerprint authentication.`)
+          setMessageType('info')
+        } else {
+          setMessage(data.error || 'Identity verification failed')
+          setMessageType('error')
+        }
+      } catch (error) {
+        setMessage('Error confirming identity')
+        setMessageType('error')
+      }
     } else {
+      // User rejected the identification - show manual selection
       setMatchedUser('')
       setSelectedUser('')
       setShowConfirmation(false)
       setFaceMatchResult(null)
-      setMessage('Face recognition cancelled. Please try again.')
+      setShowManualSelection(true)
+      setMessage('Please select your name manually from the list below.')
       setMessageType('info')
+    }
+  }
+
+  const handleManualLogin = async (username) => {
+    try {
+      setIsLoading(true)
+      setMessage(`Logging in as ${username}...`)
+      setMessageType('info')
+
+      const response = await fetch('http://localhost:5000/api/manual-login', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          username: username,
+          method: 'Manual Selection'
+        })
+      })
+
+      const data = await response.json()
+
+      if (response.ok && data.success) {
+        setSelectedUser(username)
+        setShowManualSelection(false)
+        setMessage(`Selected as ${username}. Now please proceed with fingerprint authentication.`)
+        setMessageType('info')
+      } else {
+        setMessage(data.error || 'Manual selection failed')
+        setMessageType('error')
+      }
+    } catch (error) {
+      setMessage('Error with manual selection')
+      setMessageType('error')
+    } finally {
+      setIsLoading(false)
     }
   }
 
@@ -165,7 +235,7 @@ function Login({ onBackToHome, onLoginSuccess }) {
         )}
 
         {/* Face Recognition Step */}
-        {!isLoading && users.length > 0 && !selectedUser && (
+        {!isLoading && users.length > 0 && !selectedUser && !showManualSelection && (
           <div className="mb-6">
             <div className="text-center mb-4">
               <h3 className="text-lg font-semibold text-gray-800 mb-2">Step 1: Face Recognition</h3>
@@ -175,7 +245,7 @@ function Login({ onBackToHome, onLoginSuccess }) {
             <button
               onClick={handleFaceMatch}
               disabled={isFaceMatching}
-              className={`w-full py-3 px-6 rounded-lg font-semibold transition-all duration-200 ${
+              className={`w-full py-3 px-6 rounded-lg font-semibold transition-all duration-200 mb-3 ${
                 isFaceMatching
                   ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
                   : 'bg-purple-600 hover:bg-purple-700 text-white shadow-md hover:shadow-lg transform hover:-translate-y-0.5'
@@ -190,10 +260,60 @@ function Login({ onBackToHome, onLoginSuccess }) {
                 '📷 Start Face Recognition'
               )}
             </button>
+
+            <div className="text-center">
+              <p className="text-gray-500 text-sm mb-2">Or</p>
+              <button
+                onClick={() => {
+                  setShowManualSelection(true)
+                  setMessage('Select your name from the list below.')
+                  setMessageType('info')
+                }}
+                className="text-blue-600 hover:text-blue-800 underline text-sm font-medium"
+              >
+                Select manually if face recognition doesn't work
+              </button>
+            </div>
           </div>
         )}
 
-        {/* User Confirmation Modal */}
+        {/* Manual User Selection */}
+        {showManualSelection && users.length > 0 && (
+          <div className="mb-6 p-4 bg-yellow-50 border border-yellow-200 rounded-lg">
+            <h3 className="text-lg font-semibold text-yellow-800 mb-3">Manual User Selection</h3>
+            <p className="text-yellow-700 mb-4 text-sm">
+              Face recognition didn't find a match. Please select your name from the list below:
+            </p>
+            <div className="space-y-2 max-h-40 overflow-y-auto">
+              {users.map((user, index) => (
+                <button
+                  key={index}
+                  onClick={() => handleManualLogin(user.name)}
+                  disabled={isLoading}
+                  className="w-full text-left p-3 bg-white hover:bg-yellow-100 border border-yellow-300 rounded-lg transition-colors duration-200 disabled:opacity-50"
+                >
+                  <div className="font-medium text-gray-800">{user.name}</div>
+                  {user.email && (
+                    <div className="text-sm text-gray-600">{user.email}</div>
+                  )}
+                  {user.created_at && (
+                    <div className="text-xs text-gray-500">Registered: {user.created_at}</div>
+                  )}
+                </button>
+              ))}
+            </div>
+            <button
+              onClick={() => {
+                setShowManualSelection(false)
+                setMessage('Manual selection cancelled. Try face recognition again or contact support.')
+                setMessageType('info')
+              }}
+              className="w-full mt-3 bg-gray-200 hover:bg-gray-300 text-gray-700 font-medium py-2 px-4 rounded-lg transition-colors duration-200"
+            >
+              Cancel Manual Selection
+            </button>
+          </div>
+        )}
         {showConfirmation && faceMatchResult && (
           <div className="mb-6 p-4 bg-blue-50 border border-blue-200 rounded-lg">
             <h3 className="text-lg font-semibold text-blue-800 mb-2">Face Recognition Result</h3>
@@ -270,14 +390,15 @@ function Login({ onBackToHome, onLoginSuccess }) {
         {/* Actions */}
         <div className="mt-8 space-y-3">
           {/* Reset Process Button */}
-          {(selectedUser || showConfirmation) && (
+          {(selectedUser || showConfirmation || showManualSelection) && (
             <button
               onClick={() => {
                 setSelectedUser('')
                 setMatchedUser('')
                 setShowConfirmation(false)
+                setShowManualSelection(false)
                 setFaceMatchResult(null)
-                setMessage('Process reset. Click "Start Face Recognition" to begin again.')
+                setMessage('Process reset. Choose face recognition or manual selection to begin again.')
                 setMessageType('info')
               }}
               disabled={isFaceMatching || isAuthenticating}

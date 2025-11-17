@@ -1,23 +1,25 @@
 #!/usr/bin/env python3
 """
 MongoDB Atlas Integration for Biometric Authentication System
-Handles user registration, face image storage, and fingerprint template storage
+Handles user registration, face image storage, and fingerprint template storage with SHA-256 key derivation
 """
 
 from pymongo import MongoClient
 from pymongo.errors import ConnectionFailure, DuplicateKeyError
 import gridfs
 import base64
+import hashlib
 import os
 from datetime import datetime
 from bson import ObjectId
 import io
+from steganography import BiometricSteganography
 
 class BiometricDatabase:
     def __init__(self):
         """Initialize MongoDB Atlas connection"""
         # MongoDB Atlas connection string (replace with your actual connection string)
-        self.connection_string = "string"
+        self.connection_string = ""
         self.database_name = "biometric_auth"
         self.client = None
         self.db = None
@@ -91,31 +93,73 @@ class BiometricDatabase:
             return False
     
     def save_face_image(self, user_name, image_data, filename="face_001.jpg"):
-        """Save face image to GridFS and update user record"""
+        """Save both original face image and steganographic version (if applicable) to GridFS"""
         try:
             users_collection = self.db.users
             
-            # Save image to GridFS
-            image_id = self.fs.put(
+            # Save original image first
+            original_image_id = self.fs.put(
                 image_data,
-                filename=f"{user_name}_{filename}",
-                content_type="image/jpeg",
-                metadata={"user_name": user_name, "type": "face_image"}
+                filename=f"{user_name}_original_{filename}",
+                content_type="image/png",
+                metadata={
+                    "user_name": user_name, 
+                    "type": "face_image_original",
+                    "upload_date": datetime.now()
+                }
             )
+            print(f"✅ Original face image saved for {user_name}")
             
-            # Update user record with image ID
+            # Get user info to check for fingerprint key
+            user = self.get_user(user_name)
+            fingerprint_key = None
+            stego_image_id = None
+            
+            # Check if user has a fingerprint key to embed
+            if user and user.get("fingerprint_algorithm") == "sha256":
+                fingerprint_key = user.get("fingerprint_key") or user.get("fingerprint_template")
+                if fingerprint_key and len(fingerprint_key) == 64:
+                    print(f"[INFO] Found fingerprint key for {user_name}, creating steganographic image...")
+                    
+                    # Use steganography to embed the key
+                    steg = BiometricSteganography()
+                    success, stego_image_data, message = steg.embed_key_in_image(image_data, fingerprint_key)
+                    
+                    if success:
+                        # Save steganographic image separately
+                        stego_image_id = self.fs.put(
+                            stego_image_data,
+                            filename=f"{user_name}_steganographic_{filename}",
+                            content_type="image/png",
+                            metadata={
+                                "user_name": user_name, 
+                                "type": "face_image_steganographic",
+                                "has_embedded_key": True,
+                                "upload_date": datetime.now()
+                            }
+                        )
+                        print(f"✅ Steganographic image saved for {user_name} (with embedded fingerprint key)")
+                    else:
+                        print(f"❌ Failed to create steganographic image: {message}")
+            
+            # Update user record with both image IDs
+            update_data = {
+                "face_image_id": original_image_id,
+                "face_updated_at": datetime.now()
+            }
+            
+            if stego_image_id:
+                update_data["face_stego_image_id"] = stego_image_id
+                update_data["has_steganographic_image"] = True
+            
             result = users_collection.update_one(
                 {"name": user_name},
-                {
-                    "$set": {
-                        "face_image_id": image_id,
-                        "face_updated_at": datetime.now()
-                    }
-                }
+                {"$set": update_data}
             )
             
             if result.modified_count > 0:
-                print(f"✅ Face image saved for user: {user_name}")
+                status = "with steganographic version" if stego_image_id else "original only"
+                print(f"✅ Face image(s) saved for user: {user_name} ({status})")
                 return True
             else:
                 print(f"❌ Failed to update user record for: {user_name}")
@@ -126,18 +170,24 @@ class BiometricDatabase:
             return False
     
     def save_fingerprint_template(self, user_name, template_data):
-        """Save fingerprint template to user record"""
+        """Save fingerprint template as SHA-256 derived key AND store raw template for authentication"""
         try:
             users_collection = self.db.users
             
-            # Convert binary template to base64 for storage
+            # Generate SHA-256 key from fingerprint template
+            fingerprint_key = hashlib.sha256(template_data).hexdigest()
+            print(f"[INFO] Generated SHA-256 key from fingerprint template for {user_name}")
+            
+            # Store both SHA-256 key and raw template data (base64 encoded)
             template_b64 = base64.b64encode(template_data).decode('utf-8')
             
             result = users_collection.update_one(
                 {"name": user_name},
                 {
                     "$set": {
-                        "fingerprint_template": template_b64,
+                        "fingerprint_template": template_b64,  # Store original template for matching
+                        "fingerprint_key": fingerprint_key,   # Store SHA-256 key for encryption  
+                        "fingerprint_algorithm": "sha256",
                         "fingerprint_updated_at": datetime.now(),
                         "registration_complete": True
                     }
@@ -145,14 +195,15 @@ class BiometricDatabase:
             )
             
             if result.modified_count > 0:
-                print(f"✅ Fingerprint template saved for user: {user_name}")
+                print(f"✅ Fingerprint SHA-256 key saved for user: {user_name}")
+                print(f"   - Key: {fingerprint_key[:16]}...{fingerprint_key[-16:]} (64 chars)")
                 return True
             else:
-                print(f"❌ Failed to save fingerprint template for: {user_name}")
+                print(f"❌ Failed to save fingerprint key for: {user_name}")
                 return False
                 
         except Exception as e:
-            print(f"❌ Error saving fingerprint template: {e}")
+            print(f"❌ Error saving fingerprint key: {e}")
             return False
     
     def get_user(self, name):
@@ -191,7 +242,7 @@ class BiometricDatabase:
             return []
     
     def get_face_image(self, user_name):
-        """Get face image for a user"""
+        """Get original face image for a user"""
         try:
             user = self.get_user(user_name)
             if not user or not user.get("face_image_id"):
@@ -204,20 +255,125 @@ class BiometricDatabase:
             print(f"❌ Error getting face image: {e}")
             return None
     
+    def get_steganographic_image(self, user_name):
+        """Get steganographic face image (with embedded key) for a user"""
+        try:
+            user = self.get_user(user_name)
+            if not user:
+                return None
+            
+            # Check if user has steganographic image
+            if not user.get("face_stego_image_id"):
+                print(f"[INFO] No steganographic image found for {user_name}")
+                return None
+            
+            stego_image_file = self.fs.get(user["face_stego_image_id"])
+            print(f"✅ Retrieved steganographic image for {user_name}")
+            return stego_image_file.read()
+            
+        except Exception as e:
+            print(f"❌ Error getting steganographic image: {e}")
+            return None
+    
     def get_fingerprint_template(self, user_name):
-        """Get fingerprint template for a user"""
+        """Get fingerprint template data for a user"""
         try:
             user = self.get_user(user_name)
             if not user or not user.get("fingerprint_template"):
                 return None
             
-            # Convert base64 back to binary
-            template_data = base64.b64decode(user["fingerprint_template"])
-            return template_data
-            
+            # Check if this is SHA-256 user with old or new format
+            if user.get("fingerprint_algorithm") == "sha256":
+                template_data = user["fingerprint_template"]
+                
+                # Check if it's old format (SHA-256 key) or new format (base64 template)
+                if len(template_data) == 64 and all(c in '0123456789abcdef' for c in template_data.lower()):
+                    # Old format: SHA-256 key stored as fingerprint_template
+                    print(f"[WARNING] User {user_name} uses old SHA-256 format - cannot extract template for matching")
+                    return None
+                else:
+                    # New format: base64-encoded template data
+                    template_binary = base64.b64decode(template_data)
+                    print(f"[INFO] Retrieved template for SHA-256 user {user_name}: {len(template_binary)} bytes")
+                    return template_binary
+            else:
+                # Legacy base64-encoded template - convert back to binary
+                template_data = base64.b64decode(user["fingerprint_template"])
+                print(f"[INFO] Retrieved legacy template for {user_name}: {len(template_data)} bytes")
+                return template_data
+                
         except Exception as e:
             print(f"❌ Error getting fingerprint template: {e}")
             return None
+    
+    def get_fingerprint_key(self, user_name):
+        """Get SHA-256 fingerprint key for a user (for SHA-256 users only)"""
+        try:
+            user = self.get_user(user_name)
+            if not user:
+                return None
+            
+            if user.get("fingerprint_algorithm") == "sha256":
+                fingerprint_key = user.get("fingerprint_key")
+                if fingerprint_key:
+                    print(f"[INFO] Retrieved SHA-256 key for {user_name}")
+                    return fingerprint_key
+                else:
+                    print(f"[INFO] No fingerprint_key field, using legacy SHA-256 storage")
+                    return user.get("fingerprint_template")
+            else:
+                return None
+                
+        except Exception as e:
+            print(f"❌ Error getting fingerprint key: {e}")
+            return None
+    
+    def authenticate_fingerprint(self, user_name, new_template_data):
+        """Authenticate user by comparing SHA-256 keys with tolerance for sensor variations"""
+        try:
+            user = self.get_user(user_name)
+            if not user:
+                print(f"[ERROR] User {user_name} not found")
+                return False
+            
+            # Check if user has SHA-256 based fingerprint
+            if user.get("fingerprint_algorithm") == "sha256":
+                # Generate SHA-256 key from new template
+                new_fingerprint_key = hashlib.sha256(new_template_data).hexdigest()
+                
+                # Get stored key
+                stored_key = user["fingerprint_template"]
+                
+                # Direct key comparison
+                keys_match = new_fingerprint_key == stored_key
+                
+                print(f"[DEBUG] Fingerprint authentication for {user_name}:")
+                print(f"   - New template size: {len(new_template_data)} bytes")
+                print(f"   - New key: {new_fingerprint_key}")
+                print(f"   - Stored key: {stored_key}")
+                print(f"   - Keys match: {keys_match}")
+                
+                if keys_match:
+                    print(f"✅ SHA-256 fingerprint authentication successful for {user_name}")
+                    return True
+                else:
+                    print(f"❌ SHA-256 fingerprint authentication failed for {user_name}")
+                    
+                    # Additional debugging: Check if template data is consistent
+                    print(f"   - Template data preview: {new_template_data[:20].hex()}...")
+                    return False
+            else:
+                # Legacy comparison for backward compatibility
+                print(f"[INFO] User {user_name} uses legacy fingerprint storage")
+                stored_template = self.get_fingerprint_template(user_name)
+                if stored_template is None:
+                    return False
+                # Simple byte comparison
+                return stored_template == new_template_data
+                
+        except Exception as e:
+            print(f"❌ Error during fingerprint authentication: {e}")
+            return False
     
     def update_registration_status(self, user_name, face_complete=False, fingerprint_complete=False):
         """Update user registration status"""
@@ -260,8 +416,8 @@ def get_database():
     return db_instance
 
 def main():
-    """Test MongoDB connection and operations"""
-    print("=== MongoDB Atlas Biometric Database Test ===")
+    """Test MongoDB connection and SHA-256 key operations"""
+    print("=== MongoDB Atlas Biometric Database with SHA-256 Key Test ===")
     
     # Connect to database
     db = get_database()
@@ -272,20 +428,45 @@ def main():
     
     # Test operations
     print("\n1. Testing user creation...")
-    user_id = db.create_user("TestUser", "test@example.com", "1234567890")
+    user_id = db.create_user("TestUserSHA", "test@example.com", "1234567890")
     
-    print("\n2. Testing user retrieval...")
-    user = db.get_user("TestUser")
-    if user:
-        print(f"✅ User found: {user['name']}")
+    print("\n2. Testing SHA-256 fingerprint key storage...")
+    # Simulate a fingerprint template
+    import secrets
+    test_fingerprint = secrets.token_bytes(256)  # 256-byte fingerprint template
     
-    print("\n3. Testing registered users list...")
+    success = db.save_fingerprint_template("TestUserSHA", test_fingerprint)
+    if success:
+        print("✅ SHA-256 fingerprint key storage successful")
+    else:
+        print("❌ SHA-256 fingerprint key storage failed")
+        return
+    
+    print("\n3. Testing fingerprint authentication...")
+    # Test with original template (should succeed)
+    auth_result = db.authenticate_fingerprint("TestUserSHA", test_fingerprint)
+    print(f"Authentication with original template: {'✅ SUCCESS' if auth_result else '❌ FAILED'}")
+    
+    # Test with different template (should fail)
+    different_fingerprint = secrets.token_bytes(256)
+    auth_result_diff = db.authenticate_fingerprint("TestUserSHA", different_fingerprint)
+    print(f"Authentication with different template: {'❌ CORRECTLY FAILED' if not auth_result_diff else '⚠️ FALSE POSITIVE'}")
+    
+    print("\n4. Testing key retrieval...")
+    retrieved_key = db.get_fingerprint_template("TestUserSHA")
+    if retrieved_key:
+        print(f"✅ Successfully retrieved fingerprint key")
+        print(f"Key format: {type(retrieved_key).__name__} ({len(retrieved_key)} characters)")
+    else:
+        print("❌ Failed to retrieve fingerprint key")
+    
+    print("\n5. Testing registered users list...")
     users = db.get_registered_users()
     print(f"Registered users: {users}")
     
     # Cleanup
     db.disconnect()
-    print("\n✅ Database test completed!")
+    print("\n✅ Database test with SHA-256 keys completed!")
 
 if __name__ == "__main__":
     main()

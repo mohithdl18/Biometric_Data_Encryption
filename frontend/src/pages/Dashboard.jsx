@@ -6,13 +6,35 @@ function Dashboard({ currentUser, onLogout, onBackToHome }) {
   const [isLoading, setIsLoading] = useState(true)
   const [message, setMessage] = useState('')
   const [messageType, setMessageType] = useState('info') // 'info', 'success', 'error'
+  const [downloadingPhoto, setDownloadingPhoto] = useState(false)
+  const [verifyingKey, setVerifyingKey] = useState(false)
+  const [keyVerificationResult, setKeyVerificationResult] = useState(null)
+  const [hasSteganographicPhoto, setHasSteganographicPhoto] = useState(false)
+  const [checkingStegoStatus, setCheckingStegoStatus] = useState(false)
 
   // Fetch user information on component mount
   useEffect(() => {
     if (currentUser) {
       fetchUserInfo()
+      checkSteganographicStatus()
     }
   }, [currentUser])
+
+  const checkSteganographicStatus = async () => {
+    try {
+      setCheckingStegoStatus(true)
+      const response = await fetch(`http://localhost:5000/api/dashboard/has-steganographic-photo/${currentUser}`)
+      const data = await response.json()
+      
+      if (response.ok && data.success) {
+        setHasSteganographicPhoto(data.has_steganographic_photo)
+      }
+    } catch (error) {
+      console.error('Failed to check steganographic status:', error)
+    } finally {
+      setCheckingStegoStatus(false)
+    }
+  }
 
   const fetchUserInfo = async () => {
     try {
@@ -85,6 +107,93 @@ function Dashboard({ currentUser, onLogout, onBackToHome }) {
     }
   }
 
+  const downloadSteganographicPhoto = async () => {
+    try {
+      setDownloadingPhoto(true)
+      setMessage('Downloading steganographic photo with embedded key...')
+      setMessageType('info')
+
+      const response = await fetch(`http://localhost:5000/api/dashboard/download-steganographic-photo/${currentUser}`)
+      
+      if (response.ok) {
+        const blob = await response.blob()
+        const url = window.URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.style.display = 'none'
+        a.href = url
+        
+        // Get filename from response headers or use default
+        const contentDisposition = response.headers.get('Content-Disposition')
+        const filename = contentDisposition 
+          ? contentDisposition.split('filename=')[1]?.replace(/"/g, '') 
+          : `${currentUser}_steganographic_photo.png`
+        
+        a.download = filename
+        document.body.appendChild(a)
+        a.click()
+        
+        // Cleanup
+        window.URL.revokeObjectURL(url)
+        document.body.removeChild(a)
+        
+        setMessage('✅ Steganographic photo downloaded successfully! Your fingerprint key is hidden inside.')
+        setMessageType('success')
+      } else {
+        const errorData = await response.json()
+        setMessage(errorData.error || 'Failed to download steganographic photo')
+        setMessageType('error')
+      }
+    } catch (error) {
+      setMessage('Error downloading steganographic photo. Please check your connection.')
+      setMessageType('error')
+    } finally {
+      setDownloadingPhoto(false)
+    }
+  }
+
+  const verifyEmbeddedKey = async () => {
+    try {
+      setVerifyingKey(true)
+      setMessage('Verifying embedded fingerprint key...')
+      setMessageType('info')
+
+      const response = await fetch(`http://localhost:5000/api/dashboard/verify-steganographic-key/${currentUser}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        }
+      })
+      
+      const data = await response.json()
+      
+      if (response.ok && data.success) {
+        setKeyVerificationResult({
+          verified: data.verified,
+          message: data.message,
+          keyPreview: data.key_preview
+        })
+        
+        if (data.verified) {
+          setMessage(`✅ Key verification successful! Preview: ${data.key_preview}`)
+          setMessageType('success')
+        } else {
+          setMessage('❌ Key verification failed - key not found in image')
+          setMessageType('error')
+        }
+      } else {
+        setMessage(data.error || 'Failed to verify embedded key')
+        setMessageType('error')
+        setKeyVerificationResult(null)
+      }
+    } catch (error) {
+      setMessage('Error verifying key. Please check your connection.')
+      setMessageType('error')
+      setKeyVerificationResult(null)
+    } finally {
+      setVerifyingKey(false)
+    }
+  }
+
   if (isLoading) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-indigo-400 to-purple-600 flex items-center justify-center">
@@ -135,14 +244,22 @@ function Dashboard({ currentUser, onLogout, onBackToHome }) {
           <div className="bg-white rounded-2xl shadow-2xl overflow-hidden mb-6">
             <div className="bg-gradient-to-r from-indigo-500 to-purple-600 p-6 text-white">
               <div className="flex items-start space-x-6">
-                {/* User Photo */}
+                {/* User Photo with Steganography Info */}
                 <div className="flex-shrink-0">
                   {userPhoto ? (
-                    <img
-                      src={userPhoto}
-                      alt={`${userInfo.name}'s photo`}
-                      className="w-32 h-32 rounded-full border-4 border-white shadow-lg object-cover"
-                    />
+                    <div className="relative">
+                      <img
+                        src={userPhoto}
+                        alt={`${userInfo.name}'s photo`}
+                        className="w-32 h-32 rounded-full border-4 border-white shadow-lg object-cover"
+                      />
+                      {/* Steganography indicator */}
+                      {userInfo.fingerprint_algorithm === 'sha256' && (
+                        <div className="absolute -bottom-1 -right-1 bg-green-500 text-white text-xs px-2 py-1 rounded-full border-2 border-white">
+                          🔐 Encrypted
+                        </div>
+                      )}
+                    </div>
                   ) : (
                     <div className="w-32 h-32 rounded-full border-4 border-white shadow-lg bg-gray-300 flex items-center justify-center">
                       <span className="text-4xl text-gray-600">👤</span>
@@ -266,6 +383,105 @@ function Dashboard({ currentUser, onLogout, onBackToHome }) {
                   )}
                 </div>
               </div>
+
+              {/* Steganographic Controls */}
+              {hasSteganographicPhoto && userInfo.has_photo && (
+                <div className="mt-6 bg-purple-50 rounded-lg p-4 border-2 border-purple-200">
+                  <h3 className="text-lg font-semibold text-purple-800 mb-3 flex items-center">
+                    <span className="text-purple-600 mr-2">🎭</span>
+                    Steganographic Photo Available
+                  </h3>
+                  <p className="text-purple-700 text-sm mb-4">
+                    ✨ Your face image has a special version with your encrypted fingerprint key hidden inside using advanced steganography.
+                  </p>
+                  
+                  <div className="flex flex-wrap gap-3">
+                    <button
+                      onClick={downloadSteganographicPhoto}
+                      disabled={downloadingPhoto}
+                      className="bg-purple-600 hover:bg-purple-700 disabled:bg-purple-400 text-white font-medium py-2 px-4 rounded-lg transition-colors duration-200 flex items-center shadow-md hover:shadow-lg"
+                    >
+                      {downloadingPhoto ? (
+                        <>
+                          <div className="animate-spin inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full mr-2"></div>
+                          Preparing Download...
+                        </>
+                      ) : (
+                        <>
+                          <span className="mr-2">📥</span>
+                          Download Steganographic Photo
+                        </>
+                      )}
+                    </button>
+                    
+                    <button
+                      onClick={verifyEmbeddedKey}
+                      disabled={verifyingKey}
+                      className="bg-green-600 hover:bg-green-700 disabled:bg-green-400 text-white font-medium py-2 px-4 rounded-lg transition-colors duration-200 flex items-center shadow-md hover:shadow-lg"
+                    >
+                      {verifyingKey ? (
+                        <>
+                          <div className="animate-spin inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full mr-2"></div>
+                          Verifying...
+                        </>
+                      ) : (
+                        <>
+                          <span className="mr-2">🔍</span>
+                          Verify Embedded Key
+                        </>
+                      )}
+                    </button>
+                  </div>
+                  
+                  {/* Key Verification Result */}
+                  {keyVerificationResult && (
+                    <div className={`mt-3 p-3 rounded-lg ${
+                      keyVerificationResult.verified 
+                        ? 'bg-green-100 border border-green-200' 
+                        : 'bg-red-100 border border-red-200'
+                    }`}>
+                      <div className="flex items-center">
+                        <span className={`mr-2 ${
+                          keyVerificationResult.verified ? 'text-green-600' : 'text-red-600'
+                        }`}>
+                          {keyVerificationResult.verified ? '✅' : '❌'}
+                        </span>
+                        <span className={`text-sm font-medium ${
+                          keyVerificationResult.verified ? 'text-green-800' : 'text-red-800'
+                        }`}>
+                          {keyVerificationResult.message}
+                        </span>
+                      </div>
+                      {keyVerificationResult.verified && keyVerificationResult.keyPreview && (
+                        <div className="mt-2 text-xs text-green-700 font-mono">
+                          Key Preview: {keyVerificationResult.keyPreview}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  
+                  {/* Info Box */}
+                  <div className="mt-4 bg-purple-100 rounded-lg p-3">
+                    <p className="text-purple-800 text-xs">
+                      <strong>ℹ️ What is steganography?</strong><br/>
+                      Your fingerprint key is invisibly embedded in the image pixels. The photo looks normal but contains your encrypted biometric data for extra security.
+                    </p>
+                  </div>
+                </div>
+              )}
+              
+              {/* Show message if steganographic photo not available */}
+              {!hasSteganographicPhoto && userInfo.fingerprint_algorithm === 'sha256' && userInfo.has_photo && (
+                <div className="mt-6 bg-yellow-50 rounded-lg p-4 border-2 border-yellow-200">
+                  <h3 className="text-lg font-semibold text-yellow-800 mb-2 flex items-center">
+                    <span className="text-yellow-600 mr-2">⚠️</span>
+                    Steganographic Photo Not Available
+                  </h3>
+                  <p className="text-yellow-700 text-sm">
+                    To get a steganographic photo with your embedded fingerprint key, please re-register your face image after enrolling your fingerprint.
+                  </p>
+                </div>
+              )}
             </div>
           </div>
         )}

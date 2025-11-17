@@ -303,10 +303,37 @@ class DatabaseFaceMatcher:
         """Capture from webcam and try to match face"""
         try:
             print("[INFO] Starting webcam for face matching...")
-            cap = cv2.VideoCapture(0)
             
-            if not cap.isOpened():
-                return {"success": False, "error": "Could not access webcam"}
+            # Try different camera indices if primary fails
+            cap = None
+            camera_indices = [0, 1, 2]
+            
+            for index in camera_indices:
+                print(f"[INFO] Trying camera index {index}...")
+                cap = cv2.VideoCapture(index)
+                
+                # Set camera properties for better performance
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                cap.set(cv2.CAP_PROP_FPS, 30)
+                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                
+                if cap.isOpened():
+                    # Test if we can actually read frames
+                    ret, test_frame = cap.read()
+                    if ret and test_frame is not None:
+                        print(f"[INFO] Successfully initialized camera {index}")
+                        break
+                    else:
+                        print(f"[WARNING] Camera {index} opened but no frames available")
+                        cap.release()
+                        cap = None
+                else:
+                    print(f"[WARNING] Camera {index} failed to open")
+                    cap = None
+            
+            if cap is None or not cap.isOpened():
+                return {"success": False, "error": "Could not access any webcam. Please check camera permissions and availability."}
             
             # Load database faces
             if not self.load_database_faces():
@@ -323,95 +350,139 @@ class DatabaseFaceMatcher:
             while frame_count < max_frames:
                 ret, frame = cap.read()
                 if not ret:
+                    print("[WARNING] Failed to read frame from camera")
                     break
+                
+                # Check if frame is valid
+                if frame is None or frame.size == 0:
+                    print("[WARNING] Invalid frame received")
+                    continue
                 
                 frame_count += 1
                 
-                # Process every 10th frame for performance
-                if frame_count % 10 != 0:
+                # Process every 5th frame for better performance
+                if frame_count % 5 != 0:
                     # Display frame with current best match
+                    try:
+                        display_frame = frame.copy()
+                        
+                        if best_match:
+                            cv2.putText(display_frame, f"Best Match: {best_match} ({best_confidence:.2f})", 
+                                       (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+                        else:
+                            cv2.putText(display_frame, "Looking for faces...", 
+                                       (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
+                        
+                        cv2.putText(display_frame, f"Time remaining: {duration_seconds - frame_count//30}s", 
+                                   (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                        
+                        cv2.putText(display_frame, "Press 'q' to quit", 
+                                   (10, display_frame.shape[0] - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+                        
+                        cv2.imshow('Face Matching', display_frame)
+                        
+                        if cv2.waitKey(1) & 0xFF == ord('q'):
+                            print("[INFO] User pressed 'q' to quit")
+                            break
+                    except Exception as e:
+                        print(f"[WARNING] Display error: {e}")
+                    continue
+                
+                # Detect faces
+                try:
+                    faces = self.detect_faces(frame)
+                    print(f"[DEBUG] Detected {len(faces)} faces in frame")
+                except Exception as e:
+                    print(f"[ERROR] Face detection failed: {e}")
+                    faces = []
+                
+                for face_bbox in faces:
+                    try:
+                        x, y, w, h = face_bbox
+                        
+                        # Validate bounding box
+                        if w <= 0 or h <= 0:
+                            continue
+                        
+                        # Extract face region with padding
+                        padding = 10
+                        y_start = max(0, y - padding)
+                        y_end = min(frame.shape[0], y + h + padding)
+                        x_start = max(0, x - padding)
+                        x_end = min(frame.shape[1], x + w + padding)
+                        
+                        face_region = frame[y_start:y_end, x_start:x_end]
+                        
+                        if face_region.size == 0:
+                            print("[WARNING] Empty face region extracted")
+                            continue
+                        
+                        # Extract features
+                        features = self.extract_deep_features(face_region)
+                        
+                        if len(features) == 0:
+                            print("[WARNING] No features extracted from face")
+                            continue
+                        
+                        # Compare with known faces
+                        for i, known_encoding in enumerate(self.known_encodings):
+                            try:
+                                # Ensure same length
+                                min_len = min(len(features), len(known_encoding))
+                                if min_len == 0:
+                                    continue
+                                    
+                                similarity = cosine_similarity([features[:min_len]], 
+                                                             [known_encoding[:min_len]])[0][0]
+                                
+                                # Update best match if this is better
+                                if similarity > best_confidence and similarity > 0.6:  # Lower threshold for testing
+                                    best_match = self.known_names[i]
+                                    best_confidence = similarity
+                                    
+                            except Exception as e:
+                                print(f"[WARNING] Comparison error: {e}")
+                                continue
+                    
+                    except Exception as e:
+                        print(f"[ERROR] Face processing error: {e}")
+                        continue
+                
+                # Display current frame with detection
+                try:
                     display_frame = frame.copy()
                     
+                    # Draw face rectangles
+                    for (x, y, w, h) in faces:
+                        cv2.rectangle(display_frame, (x, y), (x+w, y+h), (255, 0, 0), 2)
+                    
+                    # Display current best match
                     if best_match:
                         cv2.putText(display_frame, f"Best Match: {best_match} ({best_confidence:.2f})", 
-                                   (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                                   (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
                     else:
                         cv2.putText(display_frame, "Looking for faces...", 
-                                   (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                                   (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
                     
                     cv2.putText(display_frame, f"Time remaining: {duration_seconds - frame_count//30}s", 
-                               (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                               (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                    
+                    cv2.putText(display_frame, "Press 'q' to quit", 
+                               (10, display_frame.shape[0] - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
                     
                     cv2.imshow('Face Matching', display_frame)
                     
                     if cv2.waitKey(1) & 0xFF == ord('q'):
+                        print("[INFO] User pressed 'q' to quit")
                         break
-                    continue
-                
-                # Detect faces
-                faces = self.detect_faces(frame)
-                
-                for face_bbox in faces:
-                    x, y, w, h = face_bbox
-                    
-                    # Extract face region
-                    padding = 10
-                    face_region = frame[max(0, y-padding):min(frame.shape[0], y+h+padding),
-                                      max(0, x-padding):min(frame.shape[1], x+w+padding)]
-                    
-                    if face_region.size == 0:
-                        continue
-                    
-                    # Extract features
-                    features = self.extract_deep_features(face_region)
-                    
-                    # Compare with known faces
-                    for i, known_encoding in enumerate(self.known_encodings):
-                        try:
-                            # Ensure same length
-                            min_len = min(len(features), len(known_encoding))
-                            if min_len == 0:
-                                continue
-                                
-                            similarity = cosine_similarity([features[:min_len]], 
-                                                         [known_encoding[:min_len]])[0][0]
-                            
-                            # Update best match if this is better
-                            if similarity > best_confidence and similarity > 0.7:  # Threshold
-                                best_match = self.known_names[i]
-                                best_confidence = similarity
-                                
-                        except Exception as e:
-                            print(f"[WARNING] Comparison error: {e}")
-                            continue
-                
-                # Display current frame with detection
-                display_frame = frame.copy()
-                
-                # Draw face rectangles
-                for (x, y, w, h) in faces:
-                    cv2.rectangle(display_frame, (x, y), (x+w, y+h), (255, 0, 0), 2)
-                
-                # Display current best match
-                if best_match:
-                    cv2.putText(display_frame, f"Best Match: {best_match} ({best_confidence:.2f})", 
-                               (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
-                else:
-                    cv2.putText(display_frame, "Looking for faces...", 
-                               (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-                
-                cv2.putText(display_frame, f"Time remaining: {duration_seconds - frame_count//30}s", 
-                           (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-                
-                cv2.imshow('Face Matching', display_frame)
-                
-                if cv2.waitKey(1) & 0xFF == ord('q'):
-                    break
+                        
+                except Exception as e:
+                    print(f"[WARNING] Display error: {e}")
             
             cap.release()
             cv2.destroyAllWindows()
             
-            if best_match and best_confidence > 0.7:
+            if best_match and best_confidence > 0.75:  # Increased threshold for better accuracy
                 return {
                     "success": True,
                     "matched_user": best_match,
@@ -421,8 +492,9 @@ class DatabaseFaceMatcher:
             else:
                 return {
                     "success": False,
-                    "error": "No matching face found",
-                    "best_confidence": float(best_confidence) if best_confidence > 0 else 0.0
+                    "error": "User not found - no matching face in database",
+                    "best_confidence": float(best_confidence) if best_confidence > 0 else 0.0,
+                    "message": "No registered user matches your face. Please register first or try manual selection."
                 }
                 
         except Exception as e:
@@ -483,7 +555,7 @@ class DatabaseFaceMatcher:
                         print(f"[WARNING] Comparison error: {e}")
                         continue
             
-            if best_match and best_confidence > 0.7:  # Threshold
+            if best_match and best_confidence > 0.75:  # Increased threshold for better accuracy
                 return {
                     "success": True,
                     "matched_user": best_match,
@@ -493,8 +565,9 @@ class DatabaseFaceMatcher:
             else:
                 return {
                     "success": False,
-                    "error": "No matching face found above threshold",
-                    "best_confidence": float(best_confidence) if best_confidence > 0 else 0.0
+                    "error": "User not found - no matching face in database",
+                    "best_confidence": float(best_confidence) if best_confidence > 0 else 0.0,
+                    "message": "No registered user matches your face. Please register first or try manual selection."
                 }
                 
         except Exception as e:

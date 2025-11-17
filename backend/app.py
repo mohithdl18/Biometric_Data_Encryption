@@ -154,11 +154,20 @@ def capture_photo():
         # Read photo data
         photo_data = photo.read()
         
-        # Save face image to MongoDB
+        # Save face image to MongoDB (will automatically create steganographic version if fingerprint key exists)
         success = db.save_face_image(user_name, photo_data, "face_001.jpg")
         
         if not success:
             return jsonify({"error": "Failed to save photo to database"}), 500
+        
+        # Check if steganographic image was created
+        user_data = db.get_user_info(user_name)
+        has_stego = user_data.get('has_steganographic_image', False) if user_data else False
+        
+        if has_stego:
+            print(f"[INFO] ✅ Steganographic image automatically created for {user_name}")
+        else:
+            print(f"[INFO] ℹ️ No steganographic image created for {user_name} (fingerprint key not available yet)")
         
         # Update status
         capture_status[user_name]["photos_captured"] = 1
@@ -237,6 +246,66 @@ def capture_fingerprint():
             # Update user session status
             capture_status[user_name]["fingerprint_captured"] = True
             capture_status[user_name]["message"] = "Face and fingerprint registration completed successfully!"
+            
+            # Check if user has face image - if yes, create steganographic version now
+            db = get_database()
+            user_data = db.get_user_info(user_name)
+            
+            if user_data and user_data.get('face_image_id') and not user_data.get('has_steganographic_image'):
+                print(f"[INFO] User {user_name} has face image but no steganographic version. Creating now...")
+                
+                try:
+                    # Import steganography module
+                    from steganography import BiometricSteganography
+                    
+                    # Get the fingerprint key that was just saved
+                    fingerprint_key = user_data.get("fingerprint_key")
+                    
+                    if fingerprint_key and len(fingerprint_key) == 64:
+                        # Get original face image
+                        face_image_data = db.get_face_image(user_name)
+                        
+                        if face_image_data:
+                            # Create steganographic image
+                            steg = BiometricSteganography()
+                            success_steg, stego_data, message = steg.embed_key_in_image(face_image_data, fingerprint_key)
+                            
+                            if success_steg:
+                                # Save steganographic image to GridFS
+                                stego_image_id = db.fs.put(
+                                    stego_data,
+                                    filename=f"{user_name}_steganographic_face_001.jpg",
+                                    content_type="image/png",
+                                    metadata={
+                                        "user_name": user_name,
+                                        "type": "face_image_steganographic",
+                                        "has_embedded_key": True
+                                    }
+                                )
+                                
+                                # Update user document
+                                users_collection = db.db.users
+                                users_collection.update_one(
+                                    {"name": user_name},
+                                    {
+                                        "$set": {
+                                            "face_stego_image_id": stego_image_id,
+                                            "has_steganographic_image": True
+                                        }
+                                    }
+                                )
+                                
+                                print(f"[INFO] ✅ Steganographic image created automatically for existing user: {user_name}")
+                            else:
+                                print(f"[WARN] Failed to create steganographic image: {message}")
+                        else:
+                            print(f"[WARN] Could not retrieve face image for {user_name}")
+                    else:
+                        print(f"[WARN] Invalid fingerprint key for {user_name}")
+                        
+                except Exception as e:
+                    print(f"[ERROR] Failed to create steganographic image: {e}")
+                    # Don't fail the fingerprint capture if steganography fails
             
             # Send fingerprint enrollment completion email
             try:
@@ -404,6 +473,170 @@ def save_user_info(user_name, email, phone):
         f.write(f"Phone: {phone}\n")
         f.write(f"Registration Date: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
 
+@app.route('/api/users-for-selection', methods=['GET'])
+def get_users_for_selection():
+    """Get list of registered users for manual selection"""
+    try:
+        # Get database connection
+        db = get_database()
+        
+        # Get all users with complete registration
+        users_collection = db.db.users
+        users = users_collection.find(
+            {
+                "registration_complete": True,
+                "face_image_id": {"$ne": None}
+            },
+            {
+                "name": 1, 
+                "email": 1, 
+                "created_at": 1,
+                "_id": 0
+            }
+        ).sort("name", 1)
+        
+        user_list = []
+        for user in users:
+            user_list.append({
+                "name": user["name"],
+                "email": user.get("email", ""),
+                "created_at": user.get("created_at", "").strftime("%Y-%m-%d") if user.get("created_at") else ""
+            })
+        
+        return jsonify({
+            "success": True,
+            "users": user_list,
+            "count": len(user_list),
+            "message": f"Found {len(user_list)} registered users"
+        })
+        
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": f"Failed to get user list: {str(e)}"
+        }), 500
+
+@app.route('/api/manual-login', methods=['POST'])
+def manual_login():
+    """Handle manual user login selection"""
+    try:
+        data = request.get_json()
+        
+        if not data or 'username' not in data:
+            return jsonify({"error": "Username is required"}), 400
+        
+        username = data['username'].strip()
+        login_method = data.get('method', 'Manual Selection')
+        
+        if not username:
+            return jsonify({"error": "Valid username is required"}), 400
+        
+        # Get database connection
+        db = get_database()
+        
+        # Verify user exists and is registered
+        user_data = db.get_user_info(username)
+        
+        if not user_data:
+            return jsonify({
+                "success": False,
+                "error": f"User '{username}' not found in database"
+            }), 404
+        
+        if not user_data.get('registration_complete'):
+            return jsonify({
+                "success": False,
+                "error": f"User '{username}' has not completed registration"
+            }), 400
+        
+        # Send login notification email for manual selection
+        try:
+            if user_data.get('email'):
+                email_service = get_email_service()
+                if email_service.mailjet:
+                    print(f"[DEBUG] Sending manual login notification to: {user_data['email']}")
+                    email_result = email_service.send_login_notification(
+                        username, 
+                        user_data['email'], 
+                        confidence_score=1.0,  # Manual selection = 100% confidence
+                        login_method=f"Manual Selection ({login_method})"
+                    )
+                    print(f"[INFO] Manual login email sent to {user_data['email']}: {email_result.get('message', 'Success')}")
+                else:
+                    print(f"[INFO] Email service unavailable for manual login notification")
+            else:
+                print(f"[WARN] No email found for user {username}")
+        except Exception as e:
+            print(f"[WARN] Failed to send manual login email: {e}")
+            # Don't fail login if email fails
+        
+        return jsonify({
+            "success": True,
+            "username": username,
+            "confidence": 1.0,
+            "method": login_method,
+            "message": f"Manual login successful for {username}"
+        })
+        
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": f"Manual login failed: {str(e)}"
+        }), 500
+
+@app.route('/api/verify-user-identity', methods=['POST'])
+def verify_user_identity():
+    """Verify if the detected user is correct (yes/no confirmation)"""
+    try:
+        data = request.get_json()
+        
+        if not data:
+            return jsonify({"error": "Request data required"}), 400
+        
+        username = data.get('username', '').strip()
+        is_correct = data.get('is_correct', False)
+        confidence = data.get('confidence', 0.0)
+        
+        if not username:
+            return jsonify({"error": "Username is required"}), 400
+        
+        if is_correct:
+            # User confirmed identity - proceed with login
+            db = get_database()
+            user_data = db.get_user_info(username)
+            
+            if user_data and user_data.get('email'):
+                email_service = get_email_service()
+                if email_service.mailjet:
+                    email_result = email_service.send_login_notification(
+                        username, 
+                        user_data['email'], 
+                        confidence_score=confidence,
+                        login_method="Face Recognition (Confirmed)"
+                    )
+                    print(f"[INFO] Confirmed login email sent to {user_data['email']}")
+            
+            return jsonify({
+                "success": True,
+                "confirmed": True,
+                "username": username,
+                "message": f"Identity confirmed for {username}"
+            })
+        else:
+            # User rejected identity - offer manual selection
+            return jsonify({
+                "success": False,
+                "confirmed": False,
+                "message": "Identity not confirmed. Please select manually.",
+                "show_manual_selection": True
+            })
+            
+    except Exception as e:
+            return jsonify({
+                "success": False,
+                "error": f"Identity verification failed: {str(e)}"
+            }), 500
+
 @app.route('/api/users', methods=['GET'])
 def get_registered_users():
     """Get list of registered users with fingerprint data"""
@@ -422,9 +655,17 @@ def get_registered_users():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-@app.route('/api/face-match', methods=['POST'])
+@app.route('/api/face-match', methods=['POST', 'OPTIONS'])
 def match_face():
     """Automatically match face from webcam against database"""
+    if request.method == 'OPTIONS':
+        # Handle CORS preflight request
+        response = jsonify({"status": "ok"})
+        response.headers.add('Access-Control-Allow-Origin', '*')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type,Authorization')
+        response.headers.add('Access-Control-Allow-Methods', 'POST,OPTIONS')
+        return response
+        
     try:
         # Initialize face matcher
         face_matcher = DatabaseFaceMatcher()
@@ -480,7 +721,9 @@ def match_face():
             return jsonify({
                 "success": False,
                 "error": result['error'],
-                "best_confidence": result.get('best_confidence', 0.0)
+                "message": result.get('message', result['error']),
+                "best_confidence": result.get('best_confidence', 0.0),
+                "show_manual_selection": True  # Flag to show manual selection option
             }), 400
         
     except Exception as e:
@@ -507,12 +750,12 @@ def authenticate_user():
         # Get database connection
         db = get_database()
         
-        # Get stored fingerprint template
-        stored_template = db.get_fingerprint_template(username)
-        if not stored_template:
+        # Get user data to check authentication method
+        user_data = db.get_user_info(username)
+        if not user_data:
             return jsonify({
                 "success": False,
-                "message": "No fingerprint template found for user"
+                "message": f"User '{username}' not found in database"
             }), 404
         
         # Add the fingerprint match module to path
@@ -522,8 +765,35 @@ def authenticate_user():
         # Create matcher instance
         matcher = R307FingerMatcher()
         
-        # Perform authentication with stored template
-        success, confidence, message = matcher.authenticate_user_with_template(username, stored_template)
+        # Check authentication method
+        if user_data.get("fingerprint_algorithm") == "sha256":
+            print(f"[INFO] SHA-256 user detected: {username}")
+            
+            # Get template data (will be None for old format users)
+            stored_template = db.get_fingerprint_template(username)
+            if stored_template:
+                print("[INFO] Using template matching (new SHA-256 format)")
+                # Use reliable sensor-based template matching
+                success, confidence, message = matcher.authenticate_user_with_template(username, stored_template)
+            else:
+                print("[INFO] Old SHA-256 format detected - fingerprint template not available for matching")
+                return jsonify({
+                    "success": False,
+                    "message": "Please use face authentication or re-register your fingerprint for the updated system"
+                }), 400
+                
+        else:
+            print(f"[INFO] Using legacy template-based authentication for {username}")
+            # Get stored fingerprint template for legacy users
+            stored_template = db.get_fingerprint_template(username)
+            if not stored_template:
+                return jsonify({
+                    "success": False,
+                    "message": "No stored fingerprint template found"
+                }), 400
+            
+            # Authenticate using template matching
+            success, confidence, message = matcher.authenticate_user_with_template(username, stored_template)
         
         if success:
             # Send login notification email

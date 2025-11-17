@@ -108,9 +108,9 @@ def get_user_photo(username):
         
         return send_file(
             image_buffer,
-            mimetype='image/jpeg',
+            mimetype='image/png',  # PNG for steganography
             as_attachment=False,
-            download_name=f'{username}_photo.jpg'
+            download_name=f'{username}_photo.png'
         )
         
     except Exception as e:
@@ -118,6 +118,168 @@ def get_user_photo(username):
         return jsonify({
             'success': False,
             'error': f'Failed to retrieve photo: {str(e)}'
+        }), 500
+
+@dashboard_bp.route('/download-steganographic-photo/<username>', methods=['GET'])
+def download_steganographic_photo(username):
+    """
+    Download user's steganographic face image with embedded fingerprint key
+    Returns the steganographic image as a downloadable file
+    """
+    try:
+        db = get_dashboard_database()
+        
+        if not db.client:
+            return jsonify({
+                'success': False,
+                'error': 'Database connection failed'
+            }), 500
+        
+        # Get user information
+        user = db.get_user(username)
+        if not user:
+            return jsonify({
+                'success': False,
+                'error': f'User "{username}" not found'
+            }), 404
+        
+        # Get steganographic image data
+        stego_image_data = db.get_steganographic_image(username)
+        
+        if not stego_image_data:
+            return jsonify({
+                'success': False,
+                'error': f'No steganographic photo found for user "{username}". Make sure fingerprint is enrolled first.'
+            }), 404
+        
+        # Create BytesIO object for sending image
+        image_buffer = io.BytesIO(stego_image_data)
+        image_buffer.seek(0)
+        
+        # Generate descriptive filename with timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        download_name = f'{username}_steganographic_{timestamp}.png'
+        
+        return send_file(
+            image_buffer,
+            mimetype='image/png',
+            as_attachment=True,  # Force download
+            download_name=download_name
+        )
+        
+    except Exception as e:
+        print(f"❌ Error downloading steganographic photo for {username}: {e}")
+        return jsonify({
+            'success': False,
+            'error': f'Failed to download photo: {str(e)}'
+        }), 500
+
+@dashboard_bp.route('/verify-steganographic-key/<username>', methods=['POST'])
+def verify_steganographic_key(username):
+    """
+    Verify that the fingerprint key is properly embedded in the user's face image
+    """
+    try:
+        from steganography import BiometricSteganography
+        
+        db = get_dashboard_database()
+        
+        if not db.client:
+            return jsonify({
+                'success': False,
+                'error': 'Database connection failed'
+            }), 500
+        
+        # Get user information
+        user = db.get_user(username)
+        if not user:
+            return jsonify({
+                'success': False,
+                'error': f'User "{username}" not found'
+            }), 404
+        
+        # Check if user has SHA-256 key
+        if user.get("fingerprint_algorithm") != "sha256":
+            return jsonify({
+                'success': False,
+                'error': 'User does not use SHA-256 fingerprint encryption'
+            }), 400
+        
+        fingerprint_key = user.get("fingerprint_key") or user.get("fingerprint_template")
+        if not fingerprint_key or len(fingerprint_key) != 64:
+            return jsonify({
+                'success': False,
+                'error': 'No valid fingerprint key found for user'
+            }), 400
+        
+        # Get steganographic image data
+        stego_image_data = db.get_steganographic_image(username)
+        if not stego_image_data:
+            return jsonify({
+                'success': False,
+                'error': f'No steganographic image found for user "{username}"'
+            }), 404
+        
+        # Verify steganographic key
+        steg = BiometricSteganography()
+        verification_result = steg.verify_key_in_image(stego_image_data, fingerprint_key)
+        
+        if verification_result:
+            return jsonify({
+                'success': True,
+                'verified': True,
+                'message': 'Fingerprint key successfully verified in steganographic image',
+                'key_preview': f"{fingerprint_key[:8]}...{fingerprint_key[-8:]}"
+            }), 200
+        else:
+            return jsonify({
+                'success': True,
+                'verified': False,
+                'message': 'Fingerprint key not found or corrupted in image'
+            }), 200
+        
+    except Exception as e:
+        print(f"❌ Error verifying steganographic key for {username}: {e}")
+        return jsonify({
+            'success': False,
+            'error': f'Failed to verify key: {str(e)}'
+        }), 500
+
+@dashboard_bp.route('/has-steganographic-photo/<username>', methods=['GET'])
+def has_steganographic_photo(username):
+    """
+    Check if user has a steganographic photo available
+    """
+    try:
+        db = get_dashboard_database()
+        
+        if not db.client:
+            return jsonify({
+                'success': False,
+                'error': 'Database connection failed'
+            }), 500
+        
+        user = db.get_user(username)
+        if not user:
+            return jsonify({
+                'success': False,
+                'error': f'User "{username}" not found'
+            }), 404
+        
+        has_stego = user.get("has_steganographic_image", False) and bool(user.get("face_stego_image_id"))
+        
+        return jsonify({
+            'success': True,
+            'has_steganographic_photo': has_stego,
+            'fingerprint_algorithm': user.get("fingerprint_algorithm"),
+            'message': 'Steganographic photo available' if has_stego else 'No steganographic photo found'
+        }), 200
+        
+    except Exception as e:
+        print(f"❌ Error checking steganographic photo for {username}: {e}")
+        return jsonify({
+            'success': False,
+            'error': f'Failed to check: {str(e)}'
         }), 500
 
 @dashboard_bp.route('/stats/<username>', methods=['GET'])
