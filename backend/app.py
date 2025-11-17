@@ -24,11 +24,20 @@ from mongodb_client import get_database
 # Import admin blueprint
 from admin import admin_bp
 
+# Import dashboard blueprint
+from dashboard import dashboard_bp
+
+# Import email service
+from mail import get_email_service
+
 app = Flask(__name__)
 CORS(app)  # Enable CORS for React frontend
 
 # Register admin blueprint
 app.register_blueprint(admin_bp)
+
+# Register dashboard blueprint
+app.register_blueprint(dashboard_bp)
 
 # Global variables to track capture status
 capture_status = {}
@@ -79,6 +88,18 @@ def register_user():
             "completed": False,
             "error": None
         }
+        
+        # Send registration email notification
+        try:
+            email_service = get_email_service()
+            if email and email_service.mailjet:
+                email_result = email_service.send_registration_email(user_name, email)
+                print(f"[INFO] Registration email sent to {email}: {email_result.get('message', 'Success')}")
+            else:
+                print(f"[INFO] Email service unavailable or no email provided for {user_name}")
+        except Exception as e:
+            print(f"[WARN] Failed to send registration email: {e}")
+            # Don't fail registration if email fails
         
         return jsonify({
             "message": f"Registration session started for {user_name}",
@@ -148,6 +169,26 @@ def capture_photo():
         # Update registration status
         db.update_registration_status(user_name, face_complete=True)
         
+        # Send face enrollment completion email
+        try:
+            user_data = db.get_user_info(user_name)
+            if user_data and user_data.get('email'):
+                email_service = get_email_service()
+                if email_service.mailjet:
+                    email_result = email_service.send_enrollment_completion_email(
+                        user_name, 
+                        user_data['email'], 
+                        enrollment_type="Face Recognition"
+                    )
+                    print(f"[INFO] Face enrollment email sent to {user_data['email']}: {email_result.get('message', 'Success')}")
+                else:
+                    print(f"[INFO] Email service unavailable for face enrollment notification")
+            else:
+                print(f"[INFO] No email found for user {user_name}")
+        except Exception as e:
+            print(f"[WARN] Failed to send face enrollment email: {e}")
+            # Don't fail enrollment if email fails
+        
         return jsonify({
             "success": True,
             "photos_captured": capture_status[user_name]["photos_captured"],
@@ -196,6 +237,29 @@ def capture_fingerprint():
             # Update user session status
             capture_status[user_name]["fingerprint_captured"] = True
             capture_status[user_name]["message"] = "Face and fingerprint registration completed successfully!"
+            
+            # Send fingerprint enrollment completion email
+            try:
+                db = get_database()
+                user_data = db.get_user_info(user_name)
+                if user_data and user_data.get('email'):
+                    email_service = get_email_service()
+                    if email_service.mailjet:
+                        # Check if both face and fingerprint are now complete
+                        enrollment_type = "Complete" if user_data.get('face_complete') else "Fingerprint"
+                        email_result = email_service.send_enrollment_completion_email(
+                            user_name, 
+                            user_data['email'], 
+                            enrollment_type=enrollment_type
+                        )
+                        print(f"[INFO] Fingerprint enrollment email sent to {user_data['email']}: {email_result.get('message', 'Success')}")
+                    else:
+                        print(f"[INFO] Email service unavailable for fingerprint enrollment notification")
+                else:
+                    print(f"[INFO] No email found for user {user_name}")
+            except Exception as e:
+                print(f"[WARN] Failed to send fingerprint enrollment email: {e}")
+                # Don't fail enrollment if email fails
             
             return jsonify({
                 "success": True,
@@ -369,6 +433,43 @@ def match_face():
         result = face_matcher.match_face_from_webcam(duration_seconds=10)
         
         if result['success']:
+            # Send login notification email
+            try:
+                username = result['matched_user']
+                confidence = result['confidence']
+                
+                print(f"[DEBUG] Attempting to send login email for user: {username}")
+                
+                # Get user email from database
+                db = get_database()
+                user_data = db.get_user_info(username)
+                
+                print(f"[DEBUG] User data retrieved: {user_data is not None}")
+                if user_data:
+                    print(f"[DEBUG] User data keys: {list(user_data.keys()) if user_data else 'None'}")
+                    print(f"[DEBUG] User email: {user_data.get('email', 'No email field')}")
+                
+                if user_data and user_data.get('email'):
+                    email_service = get_email_service()
+                    if email_service.mailjet:
+                        print(f"[DEBUG] Sending login notification to: {user_data['email']}")
+                        email_result = email_service.send_login_notification(
+                            username, 
+                            user_data['email'], 
+                            confidence_score=confidence,
+                            login_method="Face Recognition"
+                        )
+                        print(f"[INFO] Login email sent to {user_data['email']}: {email_result.get('message', 'Success')}")
+                    else:
+                        print(f"[INFO] Email service unavailable for login notification")
+                else:
+                    print(f"[WARN] No email found for user {username} - user_data: {user_data}")
+            except Exception as e:
+                print(f"[WARN] Failed to send login email: {e}")
+                import traceback
+                traceback.print_exc()
+                # Don't fail login if email fails
+            
             return jsonify({
                 "success": True,
                 "matched_user": result['matched_user'],
@@ -425,6 +526,40 @@ def authenticate_user():
         success, confidence, message = matcher.authenticate_user_with_template(username, stored_template)
         
         if success:
+            # Send login notification email
+            try:
+                print(f"[DEBUG] Attempting to send login email for user: {username}")
+                
+                # Get user email from database
+                db = get_database()
+                user_data = db.get_user_info(username)
+                
+                print(f"[DEBUG] User data retrieved: {user_data is not None}")
+                if user_data:
+                    print(f"[DEBUG] User data keys: {list(user_data.keys()) if user_data else 'None'}")
+                    print(f"[DEBUG] User email: {user_data.get('email', 'No email field')}")
+                
+                if user_data and user_data.get('email'):
+                    email_service = get_email_service()
+                    if email_service.mailjet:
+                        print(f"[DEBUG] Sending login notification to: {user_data['email']}")
+                        email_result = email_service.send_login_notification(
+                            username, 
+                            user_data['email'], 
+                            confidence_score=confidence/100.0,  # Convert to percentage
+                            login_method="Fingerprint Authentication"
+                        )
+                        print(f"[INFO] Login email sent to {user_data['email']}: {email_result.get('message', 'Success')}")
+                    else:
+                        print(f"[INFO] Email service unavailable for login notification")
+                else:
+                    print(f"[WARN] No email found for user {username} - user_data: {user_data}")
+            except Exception as e:
+                print(f"[WARN] Failed to send login email: {e}")
+                import traceback
+                traceback.print_exc()
+                # Don't fail login if email fails
+            
             return jsonify({
                 "success": True,
                 "username": username,
@@ -442,10 +577,63 @@ def authenticate_user():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route('/api/test-email/<username>', methods=['GET'])
+def test_email_for_user(username):
+    """Test email sending for a specific user"""
+    try:
+        # Get user email from database
+        db = get_database()
+        user_data = db.get_user_info(username)
+        
+        print(f"[DEBUG] Testing email for user: {username}")
+        print(f"[DEBUG] User data retrieved: {user_data is not None}")
+        
+        if user_data:
+            print(f"[DEBUG] User data: {user_data}")
+            email = user_data.get('email')
+            
+            if email:
+                email_service = get_email_service()
+                if email_service.mailjet:
+                    # Send test login notification
+                    email_result = email_service.send_login_notification(
+                        username, 
+                        email, 
+                        confidence_score=0.95,
+                        login_method="Manual Test"
+                    )
+                    return jsonify({
+                        "success": True,
+                        "message": f"Test email sent to {email}",
+                        "email_result": email_result
+                    })
+                else:
+                    return jsonify({
+                        "success": False,
+                        "error": "Email service not available"
+                    }), 500
+            else:
+                return jsonify({
+                    "success": False,
+                    "error": f"No email found for user {username}"
+                }), 404
+        else:
+            return jsonify({
+                "success": False,
+                "error": f"User {username} not found in database"
+            }), 404
+            
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": f"Error testing email: {str(e)}"
+        }), 500
+
 if __name__ == '__main__':
     print("=== Face Registration API Server ===")
     print("Server starting on http://localhost:5000")
     print("Health check: http://localhost:5000/api/health")
+    print("Test email: http://localhost:5000/api/test-email/<username>")
     print("Press Ctrl+C to stop the server")
     
     app.run(debug=True, host='0.0.0.0', port=5000)

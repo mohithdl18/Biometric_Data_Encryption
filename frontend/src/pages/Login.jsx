@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 
-function Login({ onBackToHome }) {
+function Login({ onBackToHome, onLoginSuccess }) {
   const [users, setUsers] = useState([])
   const [selectedUser, setSelectedUser] = useState('')
   const [matchedUser, setMatchedUser] = useState('')
@@ -114,9 +114,12 @@ function Login({ onBackToHome }) {
         setMessage(`🎉 Welcome, ${selectedUser}! Authentication successful (Confidence: ${data.confidence})`)
         setMessageType('success')
         
-        // Could redirect to dashboard or perform other actions here
+        // Redirect to dashboard after successful authentication
         setTimeout(() => {
-          setMessage('Login successful! Redirecting...')
+          setMessage('Login successful! Redirecting to dashboard...')
+          if (onLoginSuccess) {
+            onLoginSuccess(selectedUser)
+          }
         }, 2000)
       } else {
         setMessage(data.message || 'Authentication failed')

@@ -3,9 +3,11 @@ import './App.css'
 import Register from './pages/Register'
 import Login from './pages/Login'
 import Admin from './pages/Admin'
+import Dashboard from './pages/Dashboard'
 
 function App() {
   const [currentPage, setCurrentPage] = useState('home')
+  const [currentUser, setCurrentUser] = useState(null)
 
   const handleLogin = () => {
     console.log('Login button clicked')
@@ -24,6 +26,17 @@ function App() {
 
   const handleBackToHome = () => {
     setCurrentPage('home')
+    setCurrentUser(null)
+  }
+
+  const handleLoginSuccess = (username) => {
+    setCurrentUser(username)
+    setCurrentPage('dashboard')
+  }
+
+  const handleLogout = () => {
+    setCurrentUser(null)
+    setCurrentPage('home')
   }
 
   if (currentPage === 'register') {
@@ -31,11 +44,15 @@ function App() {
   }
 
   if (currentPage === 'login') {
-    return <Login onBackToHome={handleBackToHome} />
+    return <Login onBackToHome={handleBackToHome} onLoginSuccess={handleLoginSuccess} />
   }
 
   if (currentPage === 'admin') {
     return <Admin onBackToHome={handleBackToHome} />
+  }
+
+  if (currentPage === 'dashboard') {
+    return <Dashboard currentUser={currentUser} onLogout={handleLogout} onBackToHome={handleBackToHome} />
   }
 
   return (

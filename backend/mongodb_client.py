@@ -165,6 +165,10 @@ class BiometricDatabase:
             print(f"❌ Error getting user: {e}")
             return None
     
+    def get_user_info(self, name):
+        """Get user information (alias for get_user for compatibility)"""
+        return self.get_user(name)
+    
     def get_registered_users(self):
         """Get list of users with complete registration (both face and fingerprint)"""
         try:
