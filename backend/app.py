@@ -21,6 +21,9 @@ from face_match import DatabaseFaceMatcher
 # Import MongoDB client
 from mongodb_client import get_database
 
+# Import save face photos module
+from save_face_photos import save_single_photo_to_new_folder
+
 # Import admin blueprint
 from admin import admin_bp
 
@@ -83,7 +86,7 @@ def register_user():
         capture_status[user_name] = {
             "status": "ready",
             "photos_captured": 0,
-            "total_photos": 1,
+            "total_photos": 3,
             "message": "Registration session started. Ready for manual capture.",
             "completed": False,
             "error": None
@@ -148,59 +151,83 @@ def capture_photo():
         
         # Check if photo already captured
         current_count = capture_status[user_name]["photos_captured"]
-        if current_count >= 1:
-            return jsonify({"error": "Photo already captured"}), 400
+        total_photos = capture_status[user_name]["total_photos"]
+        
+        if current_count >= total_photos:
+            return jsonify({"error": "All photos already captured"}), 400
         
         # Read photo data
         photo_data = photo.read()
         
+        # Determine the photo number (1-indexed)
+        photo_number = current_count + 1
+        filename = f"face_{photo_number:03d}.jpg"
+        
         # Save face image to MongoDB (will automatically create steganographic version if fingerprint key exists)
-        success = db.save_face_image(user_name, photo_data, "face_001.jpg")
+        success = db.save_face_image(user_name, photo_data, filename, photo_number)
         
         if not success:
             return jsonify({"error": "Failed to save photo to database"}), 500
         
-        # Check if steganographic image was created
-        user_data = db.get_user_info(user_name)
-        has_stego = user_data.get('has_steganographic_image', False) if user_data else False
+        # Save photo to Face Recognition/new folder for training
+        try:
+            save_result = save_single_photo_to_new_folder(user_name, photo_data, photo_number)
+            if save_result["success"]:
+                print(f"[INFO] ✅ Photo saved to Face Recognition/new: {save_result['filename']}")
+            else:
+                print(f"[WARN] ⚠️ Failed to save photo to Face Recognition/new: {save_result['message']}")
+        except Exception as e:
+            print(f"[WARN] ⚠️ Error saving photo to Face Recognition/new: {e}")
+            # Don't fail the registration if this fails
         
-        if has_stego:
-            print(f"[INFO] ✅ Steganographic image automatically created for {user_name}")
-        else:
-            print(f"[INFO] ℹ️ No steganographic image created for {user_name} (fingerprint key not available yet)")
+        # Check if steganographic image was created (only for first photo)
+        if photo_number == 1:
+            user_data = db.get_user_info(user_name)
+            has_stego = user_data.get('has_steganographic_image', False) if user_data else False
+            
+            if has_stego:
+                print(f"[INFO] ✅ Steganographic image automatically created for {user_name}")
+            else:
+                print(f"[INFO] ℹ️ No steganographic image created for {user_name} (fingerprint key not available yet)")
         
         # Update status
-        capture_status[user_name]["photos_captured"] = 1
-        capture_status[user_name]["message"] = "Photo 1/1 captured successfully"
-        capture_status[user_name]["status"] = "completed"
-        capture_status[user_name]["completed"] = True
+        capture_status[user_name]["photos_captured"] = photo_number
+        capture_status[user_name]["message"] = f"Photo {photo_number}/{total_photos} captured successfully"
         
-        # Update registration status
-        db.update_registration_status(user_name, face_complete=True)
-        
-        # Send face enrollment completion email
-        try:
-            user_data = db.get_user_info(user_name)
-            if user_data and user_data.get('email'):
-                email_service = get_email_service()
-                if email_service.mailjet:
-                    email_result = email_service.send_enrollment_completion_email(
-                        user_name, 
-                        user_data['email'], 
-                        enrollment_type="Face Recognition"
-                    )
-                    print(f"[INFO] Face enrollment email sent to {user_data['email']}: {email_result.get('message', 'Success')}")
+        # Check if all photos are captured
+        if photo_number >= total_photos:
+            capture_status[user_name]["status"] = "completed"
+            capture_status[user_name]["completed"] = True
+            
+            # Update registration status
+            db.update_registration_status(user_name, face_complete=True)
+            
+            # Send face enrollment completion email
+            try:
+                user_data = db.get_user_info(user_name)
+                if user_data and user_data.get('email'):
+                    email_service = get_email_service()
+                    if email_service.mailjet:
+                        email_result = email_service.send_enrollment_completion_email(
+                            user_name, 
+                            user_data['email'], 
+                            enrollment_type="Face Recognition"
+                        )
+                        print(f"[INFO] Face enrollment email sent to {user_data['email']}: {email_result.get('message', 'Success')}")
+                    else:
+                        print(f"[INFO] Email service unavailable for face enrollment notification")
                 else:
-                    print(f"[INFO] Email service unavailable for face enrollment notification")
-            else:
-                print(f"[INFO] No email found for user {user_name}")
-        except Exception as e:
-            print(f"[WARN] Failed to send face enrollment email: {e}")
-            # Don't fail enrollment if email fails
+                    print(f"[INFO] No email found for user {user_name}")
+            except Exception as e:
+                print(f"[WARN] Failed to send face enrollment email: {e}")
+                # Don't fail enrollment if email fails
+        else:
+            capture_status[user_name]["status"] = "capturing"
         
         return jsonify({
             "success": True,
             "photos_captured": capture_status[user_name]["photos_captured"],
+            "total_photos": capture_status[user_name]["total_photos"],
             "message": capture_status[user_name]["message"],
             "completed": capture_status[user_name].get("completed", False)
         })

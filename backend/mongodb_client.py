@@ -67,6 +67,8 @@ class BiometricDatabase:
                 "phone": phone,
                 "created_at": datetime.now(),
                 "face_image_id": None,
+                "face_image_ids": [],  # Array to store multiple face image IDs
+                "face_images_count": 0,
                 "fingerprint_template": None,
                 "registration_complete": False
             }
@@ -92,7 +94,7 @@ class BiometricDatabase:
             print(f"❌ Error checking user existence: {e}")
             return False
     
-    def save_face_image(self, user_name, image_data, filename="face_001.jpg"):
+    def save_face_image(self, user_name, image_data, filename="face_001.jpg", photo_number=1):
         """Save both original face image and steganographic version (if applicable) to GridFS"""
         try:
             users_collection = self.db.users
@@ -105,10 +107,11 @@ class BiometricDatabase:
                 metadata={
                     "user_name": user_name, 
                     "type": "face_image_original",
+                    "photo_number": photo_number,
                     "upload_date": datetime.now()
                 }
             )
-            print(f"✅ Original face image saved for {user_name}")
+            print(f"✅ Original face image {photo_number} saved for {user_name}")
             
             # Get user info to check for fingerprint key
             user = self.get_user(user_name)
@@ -144,7 +147,7 @@ class BiometricDatabase:
             
             # Update user record with both image IDs
             update_data = {
-                "face_image_id": original_image_id,
+                "face_image_id": original_image_id,  # Keep for backward compatibility (stores latest)
                 "face_updated_at": datetime.now()
             }
             
@@ -152,9 +155,14 @@ class BiometricDatabase:
                 update_data["face_stego_image_id"] = stego_image_id
                 update_data["has_steganographic_image"] = True
             
+            # Add to the array of face image IDs and increment count
             result = users_collection.update_one(
                 {"name": user_name},
-                {"$set": update_data}
+                {
+                    "$set": update_data,
+                    "$push": {"face_image_ids": original_image_id},
+                    "$inc": {"face_images_count": 1}
+                }
             )
             
             if result.modified_count > 0:
@@ -242,7 +250,7 @@ class BiometricDatabase:
             return []
     
     def get_face_image(self, user_name):
-        """Get original face image for a user"""
+        """Get original face image for a user (returns the first/primary image)"""
         try:
             user = self.get_user(user_name)
             if not user or not user.get("face_image_id"):
@@ -254,6 +262,47 @@ class BiometricDatabase:
         except Exception as e:
             print(f"❌ Error getting face image: {e}")
             return None
+    
+    def get_all_face_images(self, user_name):
+        """Get all face images for a user"""
+        try:
+            user = self.get_user(user_name)
+            if not user:
+                return []
+            
+            face_image_ids = user.get("face_image_ids", [])
+            if not face_image_ids:
+                # Fallback to single image if no array exists
+                if user.get("face_image_id"):
+                    image_file = self.fs.get(user["face_image_id"])
+                    return [image_file.read()]
+                return []
+            
+            images = []
+            for image_id in face_image_ids:
+                try:
+                    image_file = self.fs.get(image_id)
+                    images.append(image_file.read())
+                except Exception as e:
+                    print(f"[WARNING] Could not retrieve face image {image_id}: {e}")
+            
+            print(f"✅ Retrieved {len(images)} face images for {user_name}")
+            return images
+            
+        except Exception as e:
+            print(f"❌ Error getting all face images: {e}")
+            return []
+    
+    def get_face_images_count(self, user_name):
+        """Get the count of face images for a user"""
+        try:
+            user = self.get_user(user_name)
+            if not user:
+                return 0
+            return user.get("face_images_count", 0)
+        except Exception as e:
+            print(f"❌ Error getting face images count: {e}")
+            return 0
     
     def get_steganographic_image(self, user_name):
         """Get steganographic face image (with embedded key) for a user"""

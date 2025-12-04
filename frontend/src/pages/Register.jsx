@@ -11,7 +11,7 @@ function Register() {
   const [captureStatus, setCaptureStatus] = useState({
     message: '',
     photos_captured: 0,
-    total_photos: 1
+    total_photos: 3
   })
   const [stream, setStream] = useState(null)
   const [isCapturing, setIsCapturing] = useState(false)
@@ -116,14 +116,18 @@ function Register() {
       const result = await response.json()
       
       if (response.ok) {
+        const newCount = result.photos_captured || (captureStatus.photos_captured + 1)
+        const totalPhotos = result.total_photos || 3
+        
         setCaptureStatus(prev => ({
           ...prev,
-          photos_captured: prev.photos_captured + 1,
-          message: `Photo ${prev.photos_captured + 1}/5 captured successfully!`
+          photos_captured: newCount,
+          total_photos: totalPhotos,
+          message: `Photo ${newCount}/${totalPhotos} captured successfully!`
         }))
         
-        // Check if we're done with face capture
-        if (captureStatus.photos_captured + 1 >= 1) {
+        // Check if we're done with face capture (all 3 photos)
+        if (result.completed || newCount >= totalPhotos) {
           stopCamera()
           setIsRegistering(false)
           // Move to fingerprint capture step
@@ -175,9 +179,9 @@ function Register() {
         
         // Complete registration
         setTimeout(() => {
-          alert(`🎉 Registration completed successfully!\n\n✅ Face: 1/1 photo captured\n✅ Fingerprint: Captured\n📁 Data saved in: dataset/${formData.name}/`)
+          alert(`🎉 Registration completed successfully!\n\n✅ Face: 3/3 photos captured\n✅ Fingerprint: Captured\n📁 Data saved in: dataset/${formData.name}/`)
           setStep(1) // Go back to start
-          setCaptureStatus({ message: '', photos_captured: 0, total_photos: 1 })
+          setCaptureStatus({ message: '', photos_captured: 0, total_photos: 3 })
           setFingerprintStatus({ message: '', isCapturing: false, completed: false })
         }, 2000)
       } else {
@@ -216,13 +220,13 @@ function Register() {
         setCaptureStatus({
           message: status.message || '',
           photos_captured: status.photos_captured || 0,
-          total_photos: status.total_photos || 1
+          total_photos: status.total_photos || 3
         })
         
         if (status.completed) {
           // Registration completed successfully
           setIsRegistering(false)
-          alert(`🎉 Registration completed successfully!\n\n✅ ${status.photos_captured}/1 photo captured\n📁 Photo saved in: dataset/${userName}/\n\nYou can now use the login system!`)
+          alert(`🎉 Registration completed successfully!\n\n✅ ${status.photos_captured}/3 photos captured\n📁 Photos saved in: dataset/${userName}/\n\nYou can now use the login system!`)
         } else if (status.status === 'error' || status.status === 'failed') {
           // Registration failed
           setIsRegistering(false)
@@ -338,9 +342,10 @@ function Register() {
               <div className="text-sm text-left space-y-1">
                 <p>• Camera will open automatically</p>
                 <p>• Position your face in the frame</p>
-                <p>• 1 photo will be captured manually</p>
+                <p>• 3 photos will be captured manually</p>
                 <p>• Keep your face steady during capture</p>
-                <p>• Photo saved as face_001.jpg</p>
+                <p>• Try different angles for better recognition</p>
+                <p>• Photos saved as face_001.jpg, face_002.jpg, face_003.jpg</p>
               </div>
             </div>
           </div>
@@ -418,7 +423,7 @@ function Register() {
             
             {/* Face detection overlay would go here */}
             <div className="absolute top-4 left-4 bg-black bg-opacity-50 text-white px-3 py-1 rounded-full text-sm">
-              📸 {captureStatus.photos_captured}/1 photo captured
+              📸 {captureStatus.photos_captured}/{captureStatus.total_photos} photos captured
             </div>
           </div>
 
@@ -426,14 +431,14 @@ function Register() {
           <div className="space-y-4">
             <button
               onClick={capturePhoto}
-              disabled={isCapturing || !stream}
+              disabled={isCapturing || !stream || captureStatus.photos_captured >= captureStatus.total_photos}
               className={`w-full font-bold py-4 px-6 rounded-lg transition-colors duration-200 shadow-lg ${
-                isCapturing || !stream
+                isCapturing || !stream || captureStatus.photos_captured >= captureStatus.total_photos
                   ? 'bg-gray-400 cursor-not-allowed' 
                   : 'bg-blue-600 hover:bg-blue-700 text-white hover:shadow-xl'
               }`}
             >
-              {isCapturing ? '📸 Capturing...' : '📸 Capture Photo'}
+              {isCapturing ? '📸 Capturing...' : captureStatus.photos_captured >= captureStatus.total_photos ? '✅ All Photos Captured' : `📸 Capture Photo ${captureStatus.photos_captured + 1}/${captureStatus.total_photos}`}
             </button>
             
             <div className="flex space-x-4">
@@ -451,7 +456,7 @@ function Register() {
                 onClick={() => {
                   stopCamera()
                   setStep(1)
-                  setCaptureStatus({ message: '', photos_captured: 0, total_photos: 1 })
+                  setCaptureStatus({ message: '', photos_captured: 0, total_photos: 3 })
                 }}
                 className="flex-1 bg-red-500 hover:bg-red-600 text-white font-semibold py-3 px-6 rounded-lg transition-colors duration-200"
               >
@@ -488,7 +493,7 @@ function Register() {
           <div className="mb-8">
             <h1 className="text-3xl font-bold text-gray-800 mb-2">Fingerprint Capture</h1>
             <p className="text-gray-600">Hello, {formData.name}!</p>
-            <p className="text-sm text-gray-500 mt-2">Face capture completed ✅</p>
+            <p className="text-sm text-gray-500 mt-2">Face capture completed ✅ ({captureStatus.photos_captured}/{captureStatus.total_photos} photos)</p>
           </div>
           
           <div className="bg-purple-50 border border-purple-200 rounded-lg p-6 mb-6">
