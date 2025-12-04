@@ -1,0 +1,122 @@
+# ============================================
+# Face Recognition System - Commands Reference
+# ============================================
+
+# ===========================================
+# SCENARIO: New user images added to "new/" folder
+# ===========================================
+
+# Step 1: Check what's in the new folder (optional)
+dir new
+
+# Step 2: Run real-time recognition with the new folder
+python realtime_recognition.py --database_dir "new" --threshold 0.85
+
+# ===========================================
+# ALTERNATIVE COMMANDS
+# ===========================================
+
+# Predict a single image
+python predict_face.py --mode predict --image "path/to/query.jpg" --database_dir "new" --use_cosine --threshold 0.9
+
+# Verify if two images are same person
+python predict_face.py --mode verify --image1 "new/person1.jpg" --image2 "new/person2.jpg" --threshold 0.9
+
+# Build and save database for faster future predictions
+python predict_face.py --mode build_db --database_dir "new" --save_db "my_database.npy"
+
+# Use saved database (faster startup)
+python realtime_recognition.py --database_dir "new" --load_db "my_database.npy" --threshold 0.85
+
+# ===========================================
+# THRESHOLD ADJUSTMENT
+# ===========================================
+
+# Higher threshold (0.9-0.95) = Stricter matching, fewer false positives
+python realtime_recognition.py --database_dir "new" --threshold 0.95
+
+# Lower threshold (0.8-0.85) = More lenient, may have false positives
+python realtime_recognition.py --database_dir "new" --threshold 0.80
+
+# ===========================================
+# IF YOU WANT TO ADD IMAGES TO MAIN DATABASE
+# (Optional - only if you want to train/finetune)
+# ===========================================
+
+# Step 1: Preview what will be added
+python add_new_faces.py --source "new" --dry_run
+
+# Step 2: Add new faces to Detected Faces and CSV files
+python add_new_faces.py --source "new"
+
+# Step 3: Fine-tune model with new data (optional)
+python train_face_recognition.py --mode finetune --epochs 10 --new_data_only
+
+# ===========================================
+# FULL TRAINING COMMANDS
+# ===========================================
+
+# Train model from scratch (first time or reset)
+python train_face_recognition.py --mode train --epochs 50 --batch_size 32
+
+# Train and evaluate in one go
+python train_face_recognition.py --mode both --epochs 50 --batch_size 32
+
+# Evaluate existing model only
+python train_face_recognition.py --mode evaluate
+
+# Fine-tune with custom learning rate (lower = safer)
+python train_face_recognition.py --mode finetune --epochs 10 --new_data_only --lr 0.00001
+
+# Fine-tune with all data (not just new)
+python train_face_recognition.py --mode finetune --epochs 10
+
+# ===========================================
+# TRAINING WITH CUSTOM PARAMETERS
+# ===========================================
+
+# Custom epochs and batch size
+python train_face_recognition.py --mode train --epochs 100 --batch_size 64
+
+# Custom model output path
+python train_face_recognition.py --mode train --epochs 50 --model_path "my_model.keras"
+
+# Custom image size (default: 160)
+python train_face_recognition.py --mode train --epochs 50 --image_size 224
+
+# ===========================================
+# WHEN TO USE EACH MODE
+# ===========================================
+# --mode train    : First time training OR starting fresh
+# --mode evaluate : Test model accuracy without training
+# --mode finetune : Add new faces without losing existing knowledge
+# --mode both     : Train + evaluate in one run
+
+# ===========================================
+# USING FULL DATABASE (Detected Faces folder)
+# ===========================================
+
+# Real-time with full database (slower startup, ~4500 images)
+python realtime_recognition.py --database_dir "Detected Faces" --threshold 0.85
+
+# ===========================================
+# KEYBOARD CONTROLS DURING REAL-TIME RECOGNITION
+# ===========================================
+# q     - Quit
+# +/-   - Increase/Decrease threshold
+# s     - Save current frame
+# r     - Rebuild database
+
+# ===========================================
+# IMAGE NAMING CONVENTION
+# ===========================================
+# Format: PersonName_XXXX.jpg
+# Examples:
+#   mohith_0001.jpg
+#   mohith_0002.jpg
+#   John_Doe_0001.jpg
+#   Jane_Smith_0001.jpg
+#
+# The system extracts name from filename:
+#   mohith_0001.jpg -> "mohith"
+#   John_Doe_0001.jpg -> "John Doe"

@@ -9,11 +9,11 @@ class FaceCapture:
     def __init__(self):
         """Initialize the face capture system"""
         self.face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
-        self.max_photos = 1
+        self.max_photos = 3
         
     def capture_user_photos(self, user_name, save_path="../../../dataset"):
         """
-        Capture exactly 1 photo for user registration
+        Capture exactly 3 photos for user registration
         
         Args:
             user_name (str): Name of the user
@@ -36,7 +36,7 @@ class FaceCapture:
             
         print(f"\n=== Face Registration for {user_name} ===")
         print("Position your face in the camera view")
-        print("The system will automatically capture 1 photo")
+        print("The system will automatically capture 3 photos")
         print("Press 'q' to quit early\n")
         
         captured_count = 0
@@ -80,8 +80,8 @@ class FaceCapture:
                 # Extract and save face
                 face_img = frame[y:y+h, x:x+w]
                 
-                # Generate filename: face_001.jpg
-                filename = f"face_001.jpg"
+                # Generate filename: face_001.jpg, face_002.jpg, face_003.jpg
+                filename = f"face_{captured_count + 1:03d}.jpg"
                 filepath = os.path.join(user_folder, filename)
                 
                 # Save the face image
@@ -90,8 +90,9 @@ class FaceCapture:
                 
                 print(f"✓ Captured photo {captured_count}/{self.max_photos}: {filename}")
                 
-                # Photo captured, exit the loop
-                break
+                # Wait a bit before next capture to get different angles
+                if captured_count < self.max_photos:
+                    time.sleep(1.5)  # Wait 1.5 seconds between captures
             
             # Check for quit
             key = cv2.waitKey(1) & 0xFF
@@ -105,10 +106,10 @@ class FaceCapture:
         
         if captured_count == self.max_photos:
             print(f"\n✅ Registration complete for {user_name}!")
-            print(f"   {captured_count} photo saved in: {user_folder}")
+            print(f"   {captured_count} photos saved in: {user_folder}")
             return True
         else:
-            print(f"\n⚠️  Registration incomplete. No photos captured.")
+            print(f"\n⚠️  Registration incomplete. Only {captured_count}/{self.max_photos} photos captured.")
             return False
 
 def main():

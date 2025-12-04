@@ -1,52 +1,74 @@
 #!/usr/bin/env python3
 """
 Advanced Face Matching for Biometric Authentication System
-Matches faces against MongoDB database for automatic user identification
+Uses the trained Siamese Network model from Face Recognition module
+Matches faces against the 'new' folder for automatic user identification
 """
 
 import cv2
 import numpy as np
 import os
 import sys
-from sklearn.metrics.pairwise import cosine_similarity
-import io
-from PIL import Image
+import tempfile
+import traceback
 
 # Add parent directories to path for imports
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..'))
 
+# Add Face Recognition directory to path for FaceRecognizer import
+# Resolve the path properly - from backend/face/match/ go up to project root
+_current_file_dir = os.path.dirname(os.path.abspath(__file__))
+_backend_dir = os.path.dirname(os.path.dirname(_current_file_dir))  # backend/
+_project_root = os.path.dirname(_backend_dir)  # Biometric_Data_Encryption/
+FACE_RECOGNITION_DIR = os.path.join(_project_root, 'Face Recognition')
+sys.path.append(FACE_RECOGNITION_DIR)
+
+print(f"[DEBUG] Face Recognition directory: {FACE_RECOGNITION_DIR}")
+print(f"[DEBUG] Directory exists: {os.path.exists(FACE_RECOGNITION_DIR)}")
+
 from mongodb_client import get_database
 
+# Import FaceRecognizer from predict_face.py
+try:
+    from predict_face import FaceRecognizer
+    FACE_RECOGNIZER_AVAILABLE = True
+    print("[INFO] FaceRecognizer loaded from predict_face.py")
+except ImportError as e:
+    print(f"[WARNING] Could not import FaceRecognizer: {e}")
+    FACE_RECOGNIZER_AVAILABLE = False
+
+
 class DatabaseFaceMatcher:
+    """Face matcher using trained Siamese Network model"""
+    
     def __init__(self):
         self.face_cascade = None
-        self.known_encodings = []
-        self.known_names = []
         self.db = None
+        self.face_recognizer = None
+        self.database_loaded = False
+        
+        # Paths for Face Recognition module
+        self.model_path = os.path.join(FACE_RECOGNITION_DIR, 'face_embeddings_model.keras')
+        self.database_dir = os.path.join(FACE_RECOGNITION_DIR, 'new')
         
         # Initialize face detection
         self.setup_face_detection()
         
         # Connect to database
         self.connect_database()
+        
+        # Initialize FaceRecognizer
+        self.setup_face_recognizer()
     
     def setup_face_detection(self):
-        """Setup face detection using OpenCV Haar Cascades"""
+        """Setup face detection using OpenCV Haar Cascades or MediaPipe"""
         try:
             # Try MediaPipe first (if available)
             try:
                 import mediapipe as mp
                 self.mp_face_detection = mp.solutions.face_detection
-                self.mp_face_mesh = mp.solutions.face_mesh
-                
                 self.face_detector = self.mp_face_detection.FaceDetection(
                     model_selection=0, min_detection_confidence=0.7
-                )
-                self.face_mesh = self.mp_face_mesh.FaceMesh(
-                    static_image_mode=False, 
-                    max_num_faces=10,
-                    refine_landmarks=True, 
-                    min_detection_confidence=0.7
                 )
                 print("[INFO] Using MediaPipe for face detection")
                 return
@@ -74,131 +96,88 @@ class DatabaseFaceMatcher:
             print(f"[ERROR] Database connection failed: {e}")
             raise
     
-    def extract_deep_features(self, face_image):
-        """Extract deep features from face using multiple methods"""
-        features = []
-        
-        # Convert to grayscale
-        if len(face_image.shape) == 3:
-            gray = cv2.cvtColor(face_image, cv2.COLOR_BGR2GRAY)
-        else:
-            gray = face_image
-        
-        # Resize to standard size
-        gray = cv2.resize(gray, (112, 112))
-        
+    def setup_face_recognizer(self):
+        """Initialize the FaceRecognizer from predict_face.py"""
         try:
-            # Method 1: LBP (Local Binary Patterns)
-            lbp = self.extract_lbp_features(gray)
-            features.extend(lbp)
+            if not FACE_RECOGNIZER_AVAILABLE:
+                print("[WARNING] FaceRecognizer not available, falling back to basic matching")
+                return
             
-            # Method 2: HOG (Histogram of Oriented Gradients) 
-            hog = self.extract_hog_features(gray)
-            features.extend(hog)
+            # Resolve absolute paths
+            model_path = os.path.abspath(self.model_path)
+            database_dir = os.path.abspath(self.database_dir)
             
-            # Method 3: Gabor filters
-            gabor = self.extract_gabor_features(gray)
-            features.extend(gabor)
+            print(f"[DEBUG] Resolved model path: {model_path}")
+            print(f"[DEBUG] Resolved database dir: {database_dir}")
             
-            # Method 4: MediaPipe landmarks (if available)
-            if hasattr(self, 'face_mesh'):
-                landmarks = self.extract_mediapipe_features(face_image)
-                if landmarks is not None:
-                    features.extend(landmarks)
+            # Check if model exists
+            if not os.path.exists(model_path):
+                print(f"[WARNING] Model not found at {model_path}")
+                # Try to find the model in common locations
+                alt_paths = [
+                    os.path.join(_project_root, 'Face Recognition', 'face_embeddings_model.keras'),
+                    os.path.join(os.path.dirname(_backend_dir), 'Face Recognition', 'face_embeddings_model.keras'),
+                ]
+                for alt_path in alt_paths:
+                    if os.path.exists(alt_path):
+                        model_path = alt_path
+                        print(f"[INFO] Found model at alternate path: {model_path}")
+                        break
+                else:
+                    print(f"[ERROR] Could not find model in any location")
+                    return
+            
+            # Check if database directory exists
+            if not os.path.exists(database_dir):
+                print(f"[WARNING] Database directory not found at {database_dir}")
+                os.makedirs(database_dir, exist_ok=True)
+                print(f"[INFO] Created database directory: {database_dir}")
+            
+            # Initialize FaceRecognizer
+            print(f"[INFO] Initializing FaceRecognizer...")
+            print(f"[INFO] Model path: {model_path}")
+            print(f"[INFO] Database dir: {database_dir}")
+            
+            self.face_recognizer = FaceRecognizer(
+                model_path=model_path,
+                database_dir=database_dir
+            )
+            
+            print("[INFO] FaceRecognizer initialized successfully")
+            
         except Exception as e:
-            print(f"[WARNING] Feature extraction error: {e}")
-            # Fallback to basic features if advanced methods fail
-            features = gray.flatten()[:1000].tolist()  # Simple pixel features
-        
-        return np.array(features)
+            print(f"[ERROR] Failed to setup FaceRecognizer: {e}")
+            traceback.print_exc()
+            self.face_recognizer = None
     
-    def extract_lbp_features(self, gray_image):
-        """Extract Local Binary Pattern features"""
+    def load_database_faces(self):
+        """Build the face embeddings database from the 'new' folder"""
         try:
-            from skimage.feature import local_binary_pattern
+            if self.face_recognizer is None:
+                print("[ERROR] FaceRecognizer not initialized")
+                return False
             
-            # LBP parameters
-            radius = 1
-            n_points = 8 * radius
+            # Check if there are any images in the database directory
+            image_files = [f for f in os.listdir(self.database_dir) 
+                          if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
             
-            lbp = local_binary_pattern(gray_image, n_points, radius, method='uniform')
+            if len(image_files) == 0:
+                print(f"[WARNING] No images found in {self.database_dir}")
+                return False
             
-            # Calculate histogram
-            hist, _ = np.histogram(lbp.ravel(), bins=n_points + 2, 
-                                  range=(0, n_points + 2), density=True)
+            print(f"[INFO] Found {len(image_files)} images in database directory")
             
-            return hist
-        except ImportError:
-            # Fallback if scikit-image not available
-            return self.extract_simple_features(gray_image)
-    
-    def extract_hog_features(self, gray_image):
-        """Extract HOG features"""
-        try:
-            from skimage.feature import hog
+            # Build the database
+            self.face_recognizer.build_database()
+            self.database_loaded = True
             
-            features = hog(gray_image, orientations=9, pixels_per_cell=(8, 8),
-                          cells_per_block=(2, 2), block_norm='L2-Hys')
+            print(f"[INFO] Database built with {len(self.face_recognizer.embeddings_db)} people")
+            return len(self.face_recognizer.embeddings_db) > 0
             
-            return features
-        except ImportError:
-            # Fallback if scikit-image not available
-            return self.extract_simple_features(gray_image)
-    
-    def extract_gabor_features(self, gray_image):
-        """Extract Gabor filter features"""
-        features = []
-        
-        # Multiple Gabor kernels
-        for theta in range(0, 180, 45):  # 4 orientations
-            for frequency in [0.1, 0.3]:  # 2 frequencies
-                kernel = cv2.getGaborKernel((21, 21), 5, np.radians(theta), 
-                                          2*np.pi*frequency, 0.5, 0, ktype=cv2.CV_32F)
-                filtered = cv2.filter2D(gray_image, cv2.CV_8UC3, kernel)
-                features.extend([filtered.mean(), filtered.std()])
-        
-        return features
-    
-    def extract_mediapipe_features(self, face_image):
-        """Extract MediaPipe facial landmarks"""
-        try:
-            if not hasattr(self, 'face_mesh'):
-                return None
-                
-            rgb_image = cv2.cvtColor(face_image, cv2.COLOR_BGR2RGB)
-            results = self.face_mesh.process(rgb_image)
-            
-            if results.multi_face_landmarks:
-                landmarks = results.multi_face_landmarks[0]
-                features = []
-                
-                # Extract key landmark points
-                for i in [1, 33, 61, 199, 291, 405]:  # Key facial points
-                    if i < len(landmarks.landmark):
-                        lm = landmarks.landmark[i]
-                        features.extend([lm.x, lm.y, lm.z])
-                
-                return features
-        except Exception:
-            pass
-        
-        return None
-    
-    def extract_simple_features(self, gray_image):
-        """Simple feature extraction fallback"""
-        # Basic statistical features
-        features = [
-            gray_image.mean(),
-            gray_image.std(),
-            gray_image.min(),
-            gray_image.max()
-        ]
-        
-        # Add histogram features
-        hist = cv2.calcHist([gray_image], [0], None, [256], [0, 256])
-        features.extend(hist.flatten()[:50])  # First 50 histogram bins
-        
-        return features
+        except Exception as e:
+            print(f"[ERROR] Failed to load database faces: {e}")
+            traceback.print_exc()
+            return False
     
     def detect_faces(self, image):
         """Detect faces in image"""
@@ -218,6 +197,9 @@ class DatabaseFaceMatcher:
                         y = int(bbox.ymin * h)
                         width = int(bbox.width * w)
                         height = int(bbox.height * h)
+                        # Ensure positive values
+                        x = max(0, x)
+                        y = max(0, y)
                         faces.append((x, y, width, height))
             else:
                 # Use OpenCV Haar Cascades
@@ -229,80 +211,29 @@ class DatabaseFaceMatcher:
         
         return faces
     
-    def load_database_faces(self):
-        """Load all face encodings from MongoDB database"""
+    def save_temp_face_image(self, face_image):
+        """Save face image to a temporary file for FaceRecognizer"""
         try:
-            print("[INFO] Loading face encodings from database...")
+            # Create a temporary file
+            fd, temp_path = tempfile.mkstemp(suffix='.jpg')
+            os.close(fd)
             
-            # Get all users with face images
-            users_collection = self.db.db.users
-            users_with_faces = users_collection.find({
-                'face_image_id': {'$ne': None},
-                'registration_complete': True
-            })
+            # Save the face image
+            cv2.imwrite(temp_path, face_image)
             
-            self.known_encodings = []
-            self.known_names = []
-            
-            for user in users_with_faces:
-                try:
-                    # Get face image from GridFS
-                    face_image_data = self.db.get_face_image(user['name'])
-                    
-                    if face_image_data is None:
-                        print(f"[WARNING] No face image found for {user['name']}")
-                        continue
-                    
-                    # Convert image data to OpenCV format
-                    image_array = np.frombuffer(face_image_data, np.uint8)
-                    image = cv2.imdecode(image_array, cv2.IMREAD_COLOR)
-                    
-                    if image is None:
-                        print(f"[WARNING] Could not decode image for {user['name']}")
-                        continue
-                    
-                    # Detect face in the image
-                    faces = self.detect_faces(image)
-                    
-                    if len(faces) == 0:
-                        print(f"[WARNING] No faces detected in image for {user['name']}")
-                        continue
-                    
-                    # Use the largest face
-                    face_bbox = max(faces, key=lambda f: f[2] * f[3])
-                    x, y, w, h = face_bbox
-                    
-                    # Extract face region with padding
-                    padding = 20
-                    face_region = image[max(0, y-padding):min(image.shape[0], y+h+padding),
-                                       max(0, x-padding):min(image.shape[1], x+w+padding)]
-                    
-                    if face_region.size == 0:
-                        continue
-                    
-                    # Extract features
-                    features = self.extract_deep_features(face_region)
-                    
-                    self.known_encodings.append(features)
-                    self.known_names.append(user['name'])
-                    
-                    print(f"[INFO] Loaded face encoding for {user['name']} ({len(features)} features)")
-                    
-                except Exception as e:
-                    print(f"[ERROR] Failed to process face for {user['name']}: {e}")
-                    continue
-            
-            print(f"[INFO] Loaded {len(self.known_encodings)} face encodings from database")
-            return len(self.known_encodings) > 0
-            
+            return temp_path
         except Exception as e:
-            print(f"[ERROR] Failed to load database faces: {e}")
-            return False
+            print(f"[ERROR] Failed to save temp face image: {e}")
+            return None
     
     def match_face_from_webcam(self, duration_seconds=10):
-        """Capture from webcam and try to match face"""
+        """Capture from webcam and try to match face using trained Siamese Network model"""
         try:
             print("[INFO] Starting webcam for face matching...")
+            
+            # Check if FaceRecognizer is available
+            if self.face_recognizer is None:
+                return {"success": False, "error": "Face recognition model not available. Please ensure the model is trained."}
             
             # Try different camera indices if primary fails
             cap = None
@@ -335,15 +266,19 @@ class DatabaseFaceMatcher:
             if cap is None or not cap.isOpened():
                 return {"success": False, "error": "Could not access any webcam. Please check camera permissions and availability."}
             
-            # Load database faces
-            if not self.load_database_faces():
-                cap.release()
-                return {"success": False, "error": "No face encodings found in database"}
+            # Load database faces (build embeddings from 'new' folder)
+            if not self.database_loaded:
+                if not self.load_database_faces():
+                    cap.release()
+                    return {"success": False, "error": "No face images found in database. Please register users first."}
             
             best_match = None
             best_confidence = 0.0
             frame_count = 0
             max_frames = duration_seconds * 30  # Assume 30 FPS
+            
+            # Recognition threshold (for cosine similarity, higher is better)
+            recognition_threshold = 0.6
             
             print(f"[INFO] Face matching started. Looking for faces for {duration_seconds} seconds...")
             
@@ -391,7 +326,6 @@ class DatabaseFaceMatcher:
                 # Detect faces
                 try:
                     faces = self.detect_faces(frame)
-                    print(f"[DEBUG] Detected {len(faces)} faces in frame")
                 except Exception as e:
                     print(f"[ERROR] Face detection failed: {e}")
                     faces = []
@@ -405,7 +339,7 @@ class DatabaseFaceMatcher:
                             continue
                         
                         # Extract face region with padding
-                        padding = 10
+                        padding = 20
                         y_start = max(0, y - padding)
                         y_end = min(frame.shape[0], y + h + padding)
                         x_start = max(0, x - padding)
@@ -414,36 +348,37 @@ class DatabaseFaceMatcher:
                         face_region = frame[y_start:y_end, x_start:x_end]
                         
                         if face_region.size == 0:
-                            print("[WARNING] Empty face region extracted")
                             continue
                         
-                        # Extract features
-                        features = self.extract_deep_features(face_region)
-                        
-                        if len(features) == 0:
-                            print("[WARNING] No features extracted from face")
+                        # Save face to temp file for prediction
+                        temp_path = self.save_temp_face_image(face_region)
+                        if temp_path is None:
                             continue
                         
-                        # Compare with known faces
-                        for i, known_encoding in enumerate(self.known_encodings):
-                            try:
-                                # Ensure same length
-                                min_len = min(len(features), len(known_encoding))
-                                if min_len == 0:
-                                    continue
-                                    
-                                similarity = cosine_similarity([features[:min_len]], 
-                                                             [known_encoding[:min_len]])[0][0]
+                        try:
+                            # Use FaceRecognizer to predict
+                            result = self.face_recognizer.predict(
+                                temp_path, 
+                                threshold=recognition_threshold,
+                                top_k=3,
+                                use_cosine=True
+                            )
+                            
+                            if 'error' not in result and result.get('is_recognized', False):
+                                confidence = result.get('confidence_distance', 0)
+                                predicted_name = result.get('predicted_name', 'Unknown')
                                 
-                                # Update best match if this is better
-                                if similarity > best_confidence and similarity > 0.6:  # Lower threshold for testing
-                                    best_match = self.known_names[i]
-                                    best_confidence = similarity
-                                    
-                            except Exception as e:
-                                print(f"[WARNING] Comparison error: {e}")
-                                continue
-                    
+                                # For cosine similarity, higher is better
+                                if confidence > best_confidence:
+                                    best_match = predicted_name
+                                    best_confidence = confidence
+                                    print(f"[INFO] New best match: {best_match} (confidence: {best_confidence:.3f})")
+                            
+                        finally:
+                            # Clean up temp file
+                            if os.path.exists(temp_path):
+                                os.remove(temp_path)
+                        
                     except Exception as e:
                         print(f"[ERROR] Face processing error: {e}")
                         continue
@@ -482,7 +417,8 @@ class DatabaseFaceMatcher:
             cap.release()
             cv2.destroyAllWindows()
             
-            if best_match and best_confidence > 0.75:  # Increased threshold for better accuracy
+            # Check if we found a match
+            if best_match and best_confidence >= recognition_threshold:
                 return {
                     "success": True,
                     "matched_user": best_match,
@@ -499,6 +435,7 @@ class DatabaseFaceMatcher:
                 
         except Exception as e:
             print(f"[ERROR] Face matching error: {e}")
+            traceback.print_exc()
             if 'cap' in locals():
                 cap.release()
             cv2.destroyAllWindows()
@@ -507,10 +444,14 @@ class DatabaseFaceMatcher:
     def match_single_frame(self, frame):
         """Match face in a single frame (for API use)"""
         try:
+            # Check if FaceRecognizer is available
+            if self.face_recognizer is None:
+                return {"success": False, "error": "Face recognition model not available"}
+            
             # Load database faces if not already loaded
-            if len(self.known_encodings) == 0:
+            if not self.database_loaded:
                 if not self.load_database_faces():
-                    return {"success": False, "error": "No face encodings in database"}
+                    return {"success": False, "error": "No face images in database"}
             
             # Detect faces
             faces = self.detect_faces(frame)
@@ -520,42 +461,51 @@ class DatabaseFaceMatcher:
             
             best_match = None
             best_confidence = 0.0
+            recognition_threshold = 0.6
             
             for face_bbox in faces:
                 x, y, w, h = face_bbox
                 
-                # Extract face region
-                padding = 10
-                face_region = frame[max(0, y-padding):min(frame.shape[0], y+h+padding),
-                                  max(0, x-padding):min(frame.shape[1], x+w+padding)]
+                # Extract face region with padding
+                padding = 20
+                y_start = max(0, y - padding)
+                y_end = min(frame.shape[0], y + h + padding)
+                x_start = max(0, x - padding)
+                x_end = min(frame.shape[1], x + w + padding)
+                
+                face_region = frame[y_start:y_end, x_start:x_end]
                 
                 if face_region.size == 0:
                     continue
                 
-                # Extract features
-                features = self.extract_deep_features(face_region)
+                # Save face to temp file for prediction
+                temp_path = self.save_temp_face_image(face_region)
+                if temp_path is None:
+                    continue
                 
-                # Compare with known faces
-                for i, known_encoding in enumerate(self.known_encodings):
-                    try:
-                        # Ensure same length
-                        min_len = min(len(features), len(known_encoding))
-                        if min_len == 0:
-                            continue
-                            
-                        similarity = cosine_similarity([features[:min_len]], 
-                                                     [known_encoding[:min_len]])[0][0]
+                try:
+                    # Use FaceRecognizer to predict
+                    result = self.face_recognizer.predict(
+                        temp_path, 
+                        threshold=recognition_threshold,
+                        top_k=3,
+                        use_cosine=True
+                    )
+                    
+                    if 'error' not in result and result.get('is_recognized', False):
+                        confidence = result.get('confidence_distance', 0)
+                        predicted_name = result.get('predicted_name', 'Unknown')
                         
-                        # Update best match if this is better
-                        if similarity > best_confidence:
-                            best_match = self.known_names[i]
-                            best_confidence = similarity
-                            
-                    except Exception as e:
-                        print(f"[WARNING] Comparison error: {e}")
-                        continue
+                        if confidence > best_confidence:
+                            best_match = predicted_name
+                            best_confidence = confidence
+                    
+                finally:
+                    # Clean up temp file
+                    if os.path.exists(temp_path):
+                        os.remove(temp_path)
             
-            if best_match and best_confidence > 0.75:  # Increased threshold for better accuracy
+            if best_match and best_confidence >= recognition_threshold:
                 return {
                     "success": True,
                     "matched_user": best_match,
@@ -572,11 +522,13 @@ class DatabaseFaceMatcher:
                 
         except Exception as e:
             print(f"[ERROR] Single frame matching error: {e}")
+            traceback.print_exc()
             return {"success": False, "error": f"Face matching failed: {str(e)}"}
+
 
 def main():
     """Test face matching functionality"""
-    print("=== Database Face Matcher Test ===")
+    print("=== Database Face Matcher Test (Using Siamese Network) ===")
     
     try:
         matcher = DatabaseFaceMatcher()
@@ -590,14 +542,14 @@ def main():
             print(f"Confidence: {result['confidence']:.3f}")
             print(f"Message: {result['message']}")
         else:
-            print(f"Error: {result['error']}")
+            print(f"Error: {result.get('error', 'Unknown error')}")
             if 'best_confidence' in result:
                 print(f"Best Confidence: {result['best_confidence']:.3f}")
                 
     except Exception as e:
         print(f"[ERROR] Test failed: {e}")
-        import traceback
         traceback.print_exc()
+
 
 if __name__ == "__main__":
     main()
